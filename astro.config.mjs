@@ -1,21 +1,28 @@
 import { defineConfig } from "astro/config";
+import tailwindcss from "@tailwindcss/vite";
 import AstroPWA from "@vite-pwa/astro";
 
 export default defineConfig({
+    vite: {
+        plugins: [tailwindcss()],
+    },
     integrations: [
         AstroPWA({
-            registerType: "autoUpdate",
+            registerType: "prompt",
             devOptions: {
                 enabled: true,
+            },
+            workbox: {
+                globPatterns: ["**/*.{js,css,html,svg,png,ico,webp}"],
             },
             manifest: {
                 name: "NotMyNet",
                 short_name: "NotMyNet",
-                description: "Local-first connection monitor",
+                description: "Local-first browser-based reachability monitor",
                 start_url: "/",
                 display: "standalone",
-                background_color: "#0b1020",
-                theme_color: "#0b1020",
+                background_color: "#020617",
+                theme_color: "#020617",
                 icons: [
                     {
                         src: "/pwa-192x192.png",

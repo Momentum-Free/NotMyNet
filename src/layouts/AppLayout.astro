@@ -1,0 +1,32 @@
+---
+import '../styles/global.css'
+import { pwaInfo } from 'virtual:pwa-info'
+import ReloadPrompt from '../components/ReloadPrompt.astro'
+
+interface Props {
+  title?: string
+  description?: string
+}
+
+const {
+  title = 'NotMyNet',
+  description = 'Local-first browser-based reachability monitor',
+} = Astro.props
+---
+
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="description" content={description} />
+    <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+    <title>{title}</title>
+    {pwaInfo && <Fragment set:html={pwaInfo.webManifest.linkTag} />}
+  </head>
+
+  <body class="min-h-screen">
+    <slot />
+    <ReloadPrompt />
+  </body>
+</html>

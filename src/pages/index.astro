@@ -1,10 +1,41 @@
 ---
-import Layout from '../layouts/Layout.astro'
+import AppLayout from '../layouts/AppLayout.astro'
+import AppHeader from '../components/AppHeader.astro'
+import OverallStatus from '../components/OverallStatus.astro'
+import MonitorRow from '../components/MonitorRow.astro'
+import { mockMonitors } from '../lib/mock'
+
+const allOperational = mockMonitors.every((item) => item.summary.currentState === 'up')
 ---
 
-<Layout title="NotMyNet">
-  <main>
-    <h1>NotMyNet</h1>
-    <p>Local-first connection monitor.</p>
+<AppLayout
+  title="NotMyNet"
+  description="Installable, offline-first, browser-based reachability monitor"
+>
+  <main class="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-5 py-8 md:px-8 md:py-10">
+    <AppHeader />
+
+    <OverallStatus
+      allOperational={allOperational}
+      monitorCount={mockMonitors.length}
+      onlineHint={navigator?.onLine ?? true}
+    />
+
+    <section class="grid gap-4">
+      <div class="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+        <span class="font-semibold uppercase tracking-[0.22em] text-slate-500">Legend</span>
+        <span class="metric-pill"><span class="size-2 rounded-full bg-emerald-400"></span> up</span>
+        <span class="metric-pill"><span class="size-2 rounded-full bg-amber-400"></span> degraded</span>
+        <span class="metric-pill"><span class="size-2 rounded-full bg-rose-500"></span> down</span>
+      </div>
+
+      <div class="app-panel space-y-4 p-4 md:p-5">
+        {mockMonitors.map((vm) => <MonitorRow vm={vm} />)}
+      </div>
+    </section>
+
+    <footer class="pt-4 text-center text-sm text-slate-500">
+      <p>Phase 1 foundation: static shell, local model, IndexedDB plumbing, PWA installability, and mock rolling windows.</p>
+    </footer>
   </main>
-</Layout>
+</AppLayout>

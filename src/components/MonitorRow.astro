@@ -1,0 +1,66 @@
+---
+import RollingBars from './RollingBars.astro'
+import type { MonitorViewModel, ProbeState } from '../lib/types'
+
+interface Props {
+  vm: MonitorViewModel
+}
+
+const { vm } = Astro.props
+
+function formatMs(value: number | null) {
+  return value === null ? '—' : `${value}ms`
+}
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60)
+    const remMinutes = minutes % 60
+    return `${hours}h ${remMinutes}m`
+  }
+
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+function stateBadge(state: ProbeState) {
+  if (state === 'up') return 'bg-emerald-400 text-slate-950'
+  if (state === 'degraded') return 'bg-amber-400 text-slate-950'
+  if (state === 'down') return 'bg-rose-500 text-white'
+  return 'bg-slate-600 text-white'
+}
+---
+
+<div class="grid gap-6 rounded-2xl border border-white/5 bg-slate-950/40 p-5 md:grid-cols-[minmax(0,1fr)_420px] md:items-center">
+  <div class="min-w-0">
+    <div class="flex flex-wrap items-center gap-3">
+      <span class="rounded-full bg-emerald-400 px-3 py-1 text-xs font-bold text-slate-950">
+        {vm.summary.rollingAvailability.toFixed(vm.summary.rollingAvailability === 100 ? 0 : 2)}%
+      </span>
+
+      <h3 class="truncate text-lg font-medium text-slate-100">{vm.monitor.name}</h3>
+    </div>
+
+    <p class="mt-2 truncate text-sm text-slate-400">
+      {vm.monitor.method} {vm.monitor.url}
+    </p>
+
+    <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
+      <span class:list={['rounded-full px-3 py-1 font-semibold uppercase tracking-wide', stateBadge(vm.summary.currentState)]}>
+        {vm.summary.currentState}
+      </span>
+
+      <span class="metric-pill">last {formatMs(vm.summary.lastLatencyMs)}</span>
+      <span class="metric-pill">avg {formatMs(vm.summary.rollingAverageLatencyMs)}</span>
+      <span class="metric-pill">worst {formatMs(vm.summary.rollingWorstLatencyMs)}</span>
+      <span class="metric-pill">streak {vm.summary.streakCount}</span>
+      <span class="metric-pill">state for {formatDuration(vm.summary.currentDurationMs)}</span>
+    </div>
+  </div>
+
+  <RollingBars samples={vm.samples} />
+</div>

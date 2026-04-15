@@ -16,6 +16,7 @@
         "typescript": "^6.0.2"
     },
     "dependencies": {
+        "@tailwindcss/vite": "^4.2.2",
         "astro": "^6.1.7",
         "ky": "^2.0.1",
         "tailwind": "^4.0.0"
