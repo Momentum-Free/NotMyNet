@@ -1,44 +1,33 @@
-import { registerSW } from "virtual:pwa-register";
+import { registerSW } from 'virtual:pwa-register'
 
-window.addEventListener("load", () => {
-    const toast = document.querySelector<HTMLDivElement>("#pwa-toast");
-    const message =
-        document.querySelector<HTMLParagraphElement>("#toast-message");
-    const refreshButton =
-        document.querySelector<HTMLButtonElement>("#pwa-refresh");
-    const closeButton = document.querySelector<HTMLButtonElement>("#pwa-close");
+const toast = document.getElementById('pwa-toast')
+const toastMessage = document.getElementById('toast-message')
+const closeBtn = document.getElementById('pwa-close')
+const refreshBtn = document.getElementById('pwa-refresh')
 
-    if (!toast || !message || !refreshButton || !closeButton) return;
+function showToast(message: string, showRefresh = false) {
+  if (!toast || !toastMessage) return
+  toast.classList.remove('hidden')
+  toast.classList.add('flex', 'flex-col')
+  toastMessage.textContent = message
+  if (showRefresh && refreshBtn) {
+    refreshBtn.classList.remove('hidden')
+  }
+}
 
-    let updateServiceWorker:
-        | ((reloadPage?: boolean) => Promise<void>)
-        | undefined;
+const updateSW = registerSW({
+  onNeedRefresh() {
+    showToast('New content available, click on reload button to update.', true)
+  },
+  onOfflineReady() {
+    showToast('App shell is ready to work offline.')
+  },
+})
 
-    const show = (text: string, canRefresh: boolean) => {
-        message.textContent = text;
-        toast.classList.remove("hidden", "pointer-events-none");
-        refreshButton.classList.toggle("hidden", !canRefresh);
-    };
+closeBtn?.addEventListener('click', () => {
+  toast?.classList.add('hidden')
+})
 
-    const hide = () => {
-        toast.classList.add("hidden", "pointer-events-none");
-    };
-
-    closeButton.addEventListener("click", hide);
-    refreshButton.addEventListener("click", () => {
-        void updateServiceWorker?.(true);
-    });
-
-    updateServiceWorker = registerSW({
-        immediate: true,
-        onOfflineReady() {
-            show("App shell is ready to work offline.", false);
-        },
-        onNeedRefresh() {
-            show("A new version is available.", true);
-        },
-        onRegisterError(error) {
-            console.error("SW registration error", error);
-        },
-    });
-});
+refreshBtn?.addEventListener('click', () => {
+  updateSW()
+})
