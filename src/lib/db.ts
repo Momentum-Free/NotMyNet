@@ -1,4 +1,4 @@
-import type { AppSettings, MonitorDefinition, ProbeSample } from "./types";
+import type { AppSettings, MonitorConfig, ProbeSample } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 
 const DB_NAME = "notmynet";
@@ -38,6 +38,9 @@ export function openDb() {
                         unique: false,
                     },
                 );
+                samples.createIndex("by-startedAt", "startedAt", {
+                    unique: false,
+                });
             }
 
             if (!db.objectStoreNames.contains("settings")) {
@@ -54,14 +57,32 @@ export async function listMonitors() {
     const db = await openDb();
     const tx = db.transaction("monitors", "readonly");
     return requestToPromise(
-        tx.objectStore("monitors").getAll() as IDBRequest<MonitorDefinition[]>,
+        tx.objectStore("monitors").getAll() as IDBRequest<MonitorConfig[]>,
     );
 }
 
-export async function saveMonitor(monitor: MonitorDefinition) {
+export async function saveMonitor(monitor: MonitorConfig) {
     const db = await openDb();
     const tx = db.transaction("monitors", "readwrite");
     await requestToPromise(tx.objectStore("monitors").put(monitor));
+}
+
+export async function deleteMonitor(id: string) {
+    const db = await openDb();
+    const tx = db.transaction(["monitors", "samples"], "readwrite");
+    await requestToPromise(tx.objectStore("monitors").delete(id));
+
+    // Also delete samples for this monitor
+    const samplesStore = tx.objectStore("samples");
+    const index = samplesStore.index("by-monitor");
+    const request = index.openKeyCursor(IDBKeyRange.only(id));
+    request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+            samplesStore.delete(cursor.primaryKey);
+            cursor.continue();
+        }
+    };
 }
 
 export async function addSample(sample: ProbeSample) {
@@ -70,14 +91,54 @@ export async function addSample(sample: ProbeSample) {
     await requestToPromise(tx.objectStore("samples").put(sample));
 }
 
-export async function listSamplesForMonitor(monitorId: string) {
+export async function listSamplesForMonitor(monitorId: string, limit?: number) {
     const db = await openDb();
     const tx = db.transaction("samples", "readonly");
-    const index = tx.objectStore("samples").index("by-monitor");
-    const samples = await requestToPromise(
-        index.getAll(monitorId) as IDBRequest<ProbeSample[]>,
-    );
+    const index = tx.objectStore("samples").index("by-monitor-startedAt");
+
+    // We want the most recent ones if there is a limit
+    const range = IDBKeyRange.bound([monitorId, 0], [monitorId, Date.now()]);
+    const request = index.getAll(range, limit) as IDBRequest<ProbeSample[]>;
+    const samples = await requestToPromise(request);
+
+    // If we used limit, it might not be the most recent if we didn't use prev direction
+    // Actually IDB getAll doesn't support direction. We should use cursor for that.
+    if (limit) {
+        const results: ProbeSample[] = [];
+        return new Promise<ProbeSample[]>((resolve, reject) => {
+            const cursorReq = index.openCursor(range, "prev");
+            cursorReq.onsuccess = () => {
+                const cursor = cursorReq.result;
+                if (cursor && results.length < limit) {
+                    results.push(cursor.value);
+                    cursor.continue();
+                } else {
+                    resolve(results.reverse());
+                }
+            };
+            cursorReq.onerror = () => reject(cursorReq.error);
+        });
+    }
+
     return samples.sort((a, b) => a.startedAt - b.startedAt);
+}
+
+export async function pruneOldSamples(retentionDays: number) {
+    const db = await openDb();
+    const tx = db.transaction("samples", "readwrite");
+    const store = tx.objectStore("samples");
+    const index = store.index("by-startedAt");
+    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const range = IDBKeyRange.upperBound(cutoff);
+
+    const request = index.openKeyCursor(range);
+    request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+            store.delete(cursor.primaryKey);
+            cursor.continue();
+        }
+    };
 }
 
 export async function getSettings() {

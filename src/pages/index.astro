@@ -1,41 +1,81 @@
 ---
 import AppLayout from '../layouts/AppLayout.astro'
-import AppHeader from '../components/AppHeader.astro'
-import OverallStatus from '../components/OverallStatus.astro'
-import MonitorRow from '../components/MonitorRow.astro'
-import { mockMonitors } from '../lib/mock'
-
-const allOperational = mockMonitors.every((item) => item.summary.currentState === 'up')
+import { Dashboard } from '../components/Dashboard'
+import { Activity, Settings, Plus, AlertCircle } from 'lucide-preact'
 ---
 
 <AppLayout
-  title="NotMyNet"
+  title="NotMyNet - Dashboard"
   description="Installable, offline-first, browser-based reachability monitor"
 >
-  <main class="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-5 py-8 md:px-8 md:py-10">
-    <AppHeader />
+  <main class="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-8 px-5 py-8 md:px-8 md:py-10">
+    <header class="flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="bg-blue-600 p-2 rounded-lg">
+          <Activity class="w-6 h-6 text-white" />
+        </div>
+        <h1 class="text-2xl font-bold text-slate-100 tracking-tight">NotMyNet</h1>
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="/monitors/new" class="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition flex items-center gap-2 px-4 py-2 text-sm font-medium">
+          <Plus class="w-4 h-4" />
+          Add Monitor
+        </a>
+        <a href="/settings" class="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition" title="Settings">
+          <Settings class="w-5 h-5" />
+        </a>
+      </div>
+    </header>
 
-    <OverallStatus
-      allOperational={allOperational}
-      monitorCount={mockMonitors.length}
-      onlineHint={navigator?.onLine ?? true}
-    />
+    <div id="shared-worker-error" class="hidden p-4 bg-red-900/20 border border-red-900/30 rounded-xl text-red-400 text-sm flex items-center gap-3">
+        <AlertCircle class="w-5 h-5 shrink-0" />
+        <p>
+            <strong>Shared Worker not supported.</strong> Your browser does not support Shared Workers, which are required for background monitoring across multiple tabs.
+            For the best experience, please use a modern browser like Chrome or Edge.
+        </p>
+    </div>
 
     <section class="grid gap-4">
-      <div class="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-        <span class="font-semibold uppercase tracking-[0.22em] text-slate-500">Legend</span>
-        <span class="metric-pill"><span class="size-2 rounded-full bg-emerald-400"></span> up</span>
-        <span class="metric-pill"><span class="size-2 rounded-full bg-amber-400"></span> degraded</span>
-        <span class="metric-pill"><span class="size-2 rounded-full bg-rose-500"></span> down</span>
+      <div class="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+        <span class="font-semibold uppercase tracking-wider text-slate-500">Legend</span>
+        <div class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-emerald-500"></span> Online</div>
+        <div class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-orange-500"></span> Degraded</div>
+        <div class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-red-500"></span> Outage</div>
       </div>
 
-      <div class="app-panel space-y-4 p-4 md:p-5">
-        {mockMonitors.map((vm) => <MonitorRow vm={vm} />)}
-      </div>
+      <Dashboard client:load />
     </section>
 
-    <footer class="pt-4 text-center text-sm text-slate-500">
-      <p>Phase 1 foundation: static shell, local model, IndexedDB plumbing, PWA installability, and mock rolling windows.</p>
+    <footer class="mt-auto pt-12 border-t border-slate-800 text-center text-sm text-slate-500 space-y-4">
+      <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50 text-left max-w-2xl mx-auto">
+          <h4 class="text-slate-300 font-semibold mb-2 flex items-center gap-2">
+              <AlertCircle class="w-4 h-4 text-blue-400" />
+              About Browser-Based Monitoring
+          </h4>
+          <p class="text-xs leading-relaxed">
+              NotMyNet uses your browser's <code>fetch</code> API to check connectivity.
+              This is subject to CORS policies; if a target doesn't allow cross-origin requests, it may show as an "Outage".
+              Background monitoring depends on the browser's scheduling and may be throttled when the app is not in focus.
+          </p>
+      </div>
+      <p>Local-first reachability monitoring. All data stays on your device.</p>
+      <div class="flex justify-center gap-4">
+        <span>v1.0.0</span>
+      </div>
     </footer>
   </main>
 </AppLayout>
+
+<script>
+  // Initialize Shared Worker
+  if (typeof SharedWorker !== 'undefined') {
+    try {
+      const worker = new SharedWorker(new URL('../lib/worker.ts', import.meta.url), { type: 'module' });
+      worker.port.start();
+    } catch (e) {
+      console.error('Failed to start SharedWorker:', e);
+    }
+  } else {
+    document.getElementById('shared-worker-error')?.classList.remove('hidden');
+  }
+</script>
