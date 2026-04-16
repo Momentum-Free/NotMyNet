@@ -28,5 +28,19 @@ const {
   <body class="min-h-screen">
     <slot />
     <ReloadPrompt />
+    <script>
+      // Initialize Shared Worker globally
+      if (typeof SharedWorker !== 'undefined') {
+        try {
+          const worker = new SharedWorker(new URL('../lib/worker.ts', import.meta.url), { type: 'module' });
+          worker.port.start();
+
+          // Make worker accessible for manual refreshes
+          (window as any).notmynet_worker = worker;
+        } catch (e) {
+          console.error('Failed to start SharedWorker:', e);
+        }
+      }
+    </script>
   </body>
 </html>

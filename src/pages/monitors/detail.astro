@@ -1,0 +1,52 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro'
+import { MonitorDetail } from '../../components/MonitorDetail'
+import { ChevronLeft, Edit2 } from 'lucide-preact'
+---
+
+<AppLayout
+  title="NotMyNet - Monitor Details"
+>
+  <main class="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-8 px-5 py-8 md:px-8 md:py-10">
+    <header class="flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition">
+          <ChevronLeft class="w-5 h-5" />
+        </a>
+        <h1 class="text-2xl font-bold text-slate-100 tracking-tight">Monitor Details</h1>
+      </div>
+      <div id="edit-link-container"></div>
+    </header>
+
+    <div id="detail-container">
+        <p class="text-slate-400 text-center">Loading...</p>
+    </div>
+  </main>
+</AppLayout>
+
+<script>
+    import { render, h } from 'preact';
+    import { MonitorDetail } from '../../components/MonitorDetail';
+
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+    const container = document.getElementById('detail-container');
+    const editContainer = document.getElementById('edit-link-container');
+
+    if (container && id) {
+        container.innerHTML = '';
+        render(h(MonitorDetail, { id }), container);
+        if (editContainer) {
+            const link = document.createElement('a');
+            link.href = `/monitors/edit?id=${id}`;
+            link.className = 'p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition flex items-center gap-2 px-4 py-2 text-sm font-medium';
+            link.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                Edit Monitor
+            `;
+            editContainer.appendChild(link);
+        }
+    } else if (container) {
+        container.innerHTML = '<p class="text-red-400 text-center">No monitor ID provided.</p>';
+    }
+</script>
