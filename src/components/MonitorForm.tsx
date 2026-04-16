@@ -49,14 +49,14 @@ export function MonitorForm({ id }: Props) {
         await saveMonitor(finalConfig);
 
         // Notify worker
-        const sw = await window.navigator.serviceWorker?.ready; // This is for SW, but we use Shared Worker
-        // Shared Worker needs a way to be notified.
-        // We'll handle this by sending a message to the Shared Worker.
-        try {
-            const worker = new SharedWorker(new URL("../lib/worker.ts", import.meta.url), { type: "module" });
+        const worker = (window as any).notmynet_worker;
+        if (worker) {
             worker.port.postMessage({ type: "refresh" });
-        } catch (e) {
-            console.warn("SharedWorker not supported, relying on worker auto-refresh or reload");
+        }
+
+        // Request persistence
+        if (navigator.storage && navigator.storage.persist) {
+            await navigator.storage.persist();
         }
 
         window.location.href = "/";

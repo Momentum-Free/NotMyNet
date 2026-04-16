@@ -3,7 +3,8 @@ import { useState, useEffect, useMemo } from "preact/hooks";
 import type { MonitorViewModel, ProbeSample, ProbeState } from "../lib/types";
 import { computeSummary, getColorForState, formatDuration } from "../lib/utils";
 import { Activity, Clock, Zap, AlertTriangle, Trash2, Edit2, ExternalLink } from "lucide-preact";
-import { listMonitors, listSamplesForMonitor, deleteMonitor } from "../lib/db";
+import { listMonitors, listSamplesForMonitor, deleteMonitor, saveMonitor } from "../lib/db";
+import { CLOUDFLARE_PRESET } from "../lib/probes/http";
 
 export function Dashboard() {
     const [monitors, setMonitors] = useState<MonitorViewModel[]>([]);
@@ -27,6 +28,9 @@ export function Dashboard() {
 
         const bc = new BroadcastChannel("notmynet_updates");
         bc.onmessage = (msg) => {
+            if (msg.data.type === "refresh") {
+                loadData();
+            }
             if (msg.data.type === "sample") {
                 const sample = msg.data.sample as ProbeSample;
                 setMonitors(prev => prev.map(m => {
@@ -48,18 +52,45 @@ export function Dashboard() {
 
     if (loading) return <div class="p-8 text-center text-slate-400">Loading monitors...</div>;
 
+    const handleLoadPreset = async () => {
+        const now = Date.now();
+        const config = {
+            ...CLOUDFLARE_PRESET,
+            id: crypto.randomUUID(),
+            createdAt: now,
+            updatedAt: now,
+        } as any;
+        await saveMonitor(config);
+
+        // Notify worker
+        const worker = (window as any).notmynet_worker;
+        if (worker) {
+            worker.port.postMessage({ type: "refresh" });
+        }
+
+        loadData();
+    };
+
     if (monitors.length === 0) {
         return (
             <div class="p-12 text-center bg-slate-900 rounded-xl border border-slate-800 border-dashed">
                 <Activity class="w-12 h-12 mx-auto mb-4 text-slate-600" />
                 <h2 class="text-xl font-medium text-slate-200">No monitors yet</h2>
                 <p class="text-slate-400 mt-2 mb-6">Create your first monitor to start tracking reachability.</p>
-                <button
-                    onClick={() => window.location.href = "/monitors/new"}
-                    class="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition"
-                >
-                    Add Monitor
-                </button>
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+                    <button
+                        onClick={() => window.location.href = "/monitors/new"}
+                        class="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition"
+                    >
+                        Add Monitor
+                    </button>
+                    <button
+                        onClick={handleLoadPreset}
+                        class="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition"
+                    >
+                        Load Default Preset
+                    </button>
+                </div>
             </div>
         );
     }
@@ -125,8 +156,8 @@ function MonitorCard({ model, onDelete }: { model: MonitorViewModel, onDelete: (
                     <Stat label="Duration" value={formatDuration(summary.currentDurationMs)} icon={<Clock class="w-3 h-3" />} />
                     <Stat label="Avg Latency" value={summary.rollingAvgMs ? `${summary.rollingAvgMs}ms` : "N/A"} icon={<Activity class="w-3 h-3" />} />
                     <Stat label="Worst (Roll)" value={summary.rollingWorstMs ? `${summary.rollingWorstMs}ms` : "N/A"} icon={<AlertTriangle class="w-3 h-3" />} />
-                    <Stat label="Worst (Total)" value={summary.totalWorstMs ? `${summary.totalWorstMs}ms` : "N/A"} icon={<AlertTriangle class="w-3 h-3" />} class="hidden lg:block" />
-                    <Stat label="Last Probe" value={summary.lastProbeAt ? new Date(summary.lastProbeAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "N/A"} icon={<Clock class="w-3 h-3" />} class="hidden lg:block" />
+                    <Stat label="Worst (Total)" value={summary.totalWorstMs ? `${summary.totalWorstMs}ms` : "N/A"} icon={<AlertTriangle class="w-3 h-3" />} class="hidden md:block lg:block" />
+                    <Stat label="Last Probe" value={summary.lastProbeAt ? new Date(summary.lastProbeAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "N/A"} icon={<Clock class="w-3 h-3" />} class="hidden md:block lg:block" />
                 </div>
 
                 <div class="flex gap-[2px] h-8 w-full bg-slate-950 rounded overflow-hidden p-[2px]">

@@ -67,15 +67,8 @@ import { Activity, Settings, Plus, AlertCircle } from 'lucide-preact'
 </AppLayout>
 
 <script>
-  // Initialize Shared Worker
-  if (typeof SharedWorker !== 'undefined') {
-    try {
-      const worker = new SharedWorker(new URL('../lib/worker.ts', import.meta.url), { type: 'module' });
-      worker.port.start();
-    } catch (e) {
-      console.error('Failed to start SharedWorker:', e);
-    }
-  } else {
+  // Show error if Shared Worker is not supported
+  if (typeof SharedWorker === 'undefined') {
     document.getElementById('shared-worker-error')?.classList.remove('hidden');
   }
 </script>

@@ -93,12 +93,12 @@ export function Settings() {
 
             // Validate Monitors
             for (const m of bundle.monitors) {
-                if (!isValidMonitor(m)) throw new Error(`Invalid monitor object: \${m.name || m.id}`);
+                if (!isValidMonitor(m)) throw new Error(`Invalid monitor object: ${m.name || m.id}`);
             }
 
             // Validate Samples
             for (const s of bundle.samples) {
-                if (!isValidSample(s)) throw new Error(`Invalid sample object: \${s.id}`);
+                if (!isValidSample(s)) throw new Error(`Invalid sample object: ${s.id}`);
             }
 
             // Save settings

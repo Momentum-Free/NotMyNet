@@ -70,17 +70,25 @@ async function startPruning() {
 
 // Shared Worker boilerplate
 const ctx = self as any;
+const ports = new Set<MessagePort>();
 
 ctx.onconnect = (e: any) => {
     const port = e.ports[0];
+    ports.add(port);
 
     port.onmessage = async (msg: any) => {
         if (msg.data.type === "refresh") {
             await refreshMonitors();
+            // Broadcast to all other tabs that they should refresh their UI
+            broadcast.postMessage({ type: "refresh" });
         }
         if (msg.data.type === "ping") {
             port.postMessage({ type: "pong" });
         }
+    };
+
+    port.onmessageerror = () => {
+        ports.delete(port);
     };
 
     port.start();
