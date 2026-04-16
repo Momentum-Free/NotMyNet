@@ -137,6 +137,12 @@ function MonitorCard({ model, onDelete }: { model: MonitorViewModel, onDelete: (
                             <ExternalLink class="w-3.5 h-3.5 text-slate-600 group-hover:text-blue-400 transition opacity-0 group-hover:opacity-100" />
                         </div>
                         <p class="text-sm text-slate-400 font-mono truncate max-w-md">{config.url}</p>
+                        {summary.currentState === "outage" && samples.length > 0 && samples[samples.length - 1].errorKind && (
+                            <p class="text-[10px] text-red-400 font-bold uppercase mt-1 flex items-center gap-1">
+                                <AlertTriangle class="w-3 h-3" />
+                                Reason: {samples[samples.length - 1].errorKind}
+                            </p>
+                        )}
                     </div>
                     <div class="flex items-center gap-3">
                         <StatusBadge state={summary.currentState} />

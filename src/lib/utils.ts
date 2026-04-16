@@ -26,15 +26,14 @@ export function computeSummary(
         stateSince = samples[i].startedAt;
     }
 
-    const successful = samples.filter((s) => s.state !== "outage");
-    const measurable = samples.filter((s) => s.elapsedMs !== undefined);
+    const successful = samples.filter((s) => s.state !== "outage" && s.elapsedMs !== undefined);
 
-    const rollingAvgMs = measurable.length > 0
-        ? Math.round(measurable.reduce((sum, s) => sum + (s.elapsedMs ?? 0), 0) / measurable.length)
+    const rollingAvgMs = successful.length > 0
+        ? Math.round(successful.reduce((sum, s) => sum + (s.elapsedMs ?? 0), 0) / successful.length)
         : undefined;
 
-    const rollingWorstMs = measurable.length > 0
-        ? Math.max(...measurable.map((s) => s.elapsedMs ?? 0))
+    const rollingWorstMs = successful.length > 0
+        ? Math.max(...successful.map((s) => s.elapsedMs ?? 0))
         : undefined;
 
     return {

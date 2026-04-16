@@ -25,9 +25,6 @@ export async function runHttpProbe(
             retry: 0,
             cache: "no-store",
             throwHttpErrors: false,
-            headers: {
-                "cache-control": "no-cache",
-            },
         });
 
         const finishedAt = Date.now();
@@ -86,7 +83,7 @@ export async function runHttpProbe(
 export const CLOUDFLARE_PRESET: Omit<MonitorConfig, "id" | "createdAt" | "updatedAt"> = {
     name: "Cloudflare (Internet Reachability)",
     type: "http",
-    url: "https://1.1.1.1/cdn-cgi/trace",
+    url: "https://one.one.one.one/cdn-cgi/trace",
     method: "GET",
     intervalMs: 10000,
     timeoutMs: 5000,

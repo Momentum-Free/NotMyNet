@@ -56,6 +56,12 @@ export function MonitorDetail({ id }: { id: string }) {
                 <div>
                     <h2 class="text-3xl font-bold text-slate-100">{config.name}</h2>
                     <p class="text-slate-400 font-mono text-sm mt-1">{config.url}</p>
+                    {summary.currentState === "outage" && samples.length > 0 && samples[samples.length - 1].errorKind && (
+                        <p class="text-xs text-red-400 font-bold uppercase mt-2 flex items-center gap-1.5">
+                            <AlertTriangle class="w-4 h-4" />
+                            Failure Reason: {samples[samples.length - 1].errorKind}
+                        </p>
+                    )}
                 </div>
                 <StatusBadge state={summary.currentState} />
             </header>
