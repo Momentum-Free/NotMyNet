@@ -1,44 +1,39 @@
-import { registerSW } from "virtual:pwa-register";
+import { registerSW } from 'virtual:pwa-register'
 
-window.addEventListener("load", () => {
-    const toast = document.querySelector<HTMLDivElement>("#pwa-toast");
-    const message =
-        document.querySelector<HTMLParagraphElement>("#toast-message");
-    const refreshButton =
-        document.querySelector<HTMLButtonElement>("#pwa-refresh");
-    const closeButton = document.querySelector<HTMLButtonElement>("#pwa-close");
+const updateSW = registerSW({
+  onNeedRefresh() {
+    showToast('New content available, click on reload button to update.', true)
+  },
+  onOfflineReady() {
+    showToast('App shell is ready to work offline.')
+  },
+})
 
-    if (!toast || !message || !refreshButton || !closeButton) return;
+function showToast(message: string, showRefresh = false) {
+  const toast = document.getElementById('pwa-toast')
+  const toastMessage = document.getElementById('toast-message')
+  const refreshBtn = document.getElementById('pwa-refresh') as HTMLButtonElement
 
-    let updateServiceWorker:
-        | ((reloadPage?: boolean) => Promise<void>)
-        | undefined;
+  if (!toast || !toastMessage) return
 
-    const show = (text: string, canRefresh: boolean) => {
-        message.textContent = text;
-        toast.classList.remove("hidden", "pointer-events-none");
-        refreshButton.classList.toggle("hidden", !canRefresh);
-    };
+  toast.classList.remove('hidden')
+  toast.classList.add('flex', 'flex-col', 'pointer-events-auto')
+  toastMessage.textContent = message
 
-    const hide = () => {
-        toast.classList.add("hidden", "pointer-events-none");
-    };
+  if (showRefresh && refreshBtn) {
+    refreshBtn.classList.remove('hidden')
+  }
+}
 
-    closeButton.addEventListener("click", hide);
-    refreshButton.addEventListener("click", () => {
-        void updateServiceWorker?.(true);
-    });
+document.addEventListener('DOMContentLoaded', () => {
+    const closeBtn = document.getElementById('pwa-close')
+    const refreshBtn = document.getElementById('pwa-refresh')
 
-    updateServiceWorker = registerSW({
-        immediate: true,
-        onOfflineReady() {
-            show("App shell is ready to work offline.", false);
-        },
-        onNeedRefresh() {
-            show("A new version is available.", true);
-        },
-        onRegisterError(error) {
-            console.error("SW registration error", error);
-        },
-    });
-});
+    closeBtn?.addEventListener('click', () => {
+        document.getElementById('pwa-toast')?.classList.add('hidden')
+    })
+
+    refreshBtn?.addEventListener('click', () => {
+        updateSW(true)
+    })
+})

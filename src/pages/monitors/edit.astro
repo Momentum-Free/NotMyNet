@@ -1,0 +1,38 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro'
+import { MonitorForm } from '../../components/MonitorForm'
+import { ChevronLeft } from 'lucide-preact'
+---
+
+<AppLayout
+  title="NotMyNet - Edit Monitor"
+>
+  <main class="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-8 px-5 py-8 md:px-8 md:py-10">
+    <header class="flex items-center gap-4">
+      <a href="/" class="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition">
+        <ChevronLeft class="w-5 h-5" />
+      </a>
+      <h1 class="text-2xl font-bold text-slate-100 tracking-tight">Edit Monitor</h1>
+    </header>
+
+    <div id="form-container">
+        <p class="text-slate-400">Loading...</p>
+    </div>
+  </main>
+</AppLayout>
+
+<script>
+    import { render, h } from 'preact';
+    import { MonitorForm } from '../../components/MonitorForm';
+
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+    const container = document.getElementById('form-container');
+
+    if (container && id) {
+        container.innerHTML = '';
+        render(h(MonitorForm, { id }), container);
+    } else if (container) {
+        container.innerHTML = '<p class="text-red-400">No monitor ID provided.</p>';
+    }
+</script>

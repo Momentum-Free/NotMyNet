@@ -1,12 +1,15 @@
 import { defineConfig } from "astro/config";
 import tailwindcss from "@tailwindcss/vite";
 import AstroPWA from "@vite-pwa/astro";
+import preact from "@astrojs/preact";
 
 export default defineConfig({
+    output: "static",
     vite: {
         plugins: [tailwindcss()],
     },
     integrations: [
+        preact(),
         AstroPWA({
             registerType: "prompt",
             devOptions: {

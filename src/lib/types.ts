@@ -7,12 +7,14 @@ export type MonitorConfig = {
     intervalMs: number;
     timeoutMs: number;
     windowSize: number;
-    expectedStatus: number[];
+    expectedStatuses: number[];
     degradedMs: number;
     enabled: boolean;
     createdAt: number;
     updatedAt: number;
 };
+
+export type ProbeState = "online" | "degraded" | "outage";
 
 export type ProbeSample = {
     id: string;
@@ -21,7 +23,7 @@ export type ProbeSample = {
     finishedAt: number;
     elapsedMs?: number;
     ok: boolean;
-    state: "online" | "degraded" | "outage";
+    state: ProbeState;
     httpStatus?: number;
     errorKind?:
         | "timeout"
@@ -34,7 +36,7 @@ export type ProbeSample = {
 
 export type MonitorSummary = {
     monitorId: string;
-    currentState: "online" | "degraded" | "outage";
+    currentState: ProbeState;
     currentDurationMs: number;
     streakType: "success" | "failure";
     streakCount: number;
@@ -46,7 +48,7 @@ export type MonitorSummary = {
 };
 
 export type MonitorViewModel = {
-    monitor: MonitorConfig;
+    config: MonitorConfig;
     summary: MonitorSummary;
     samples: ProbeSample[];
 };
@@ -55,6 +57,7 @@ export type AppSettings = {
     defaultWindowSize: number;
     defaultIntervalMs: number;
     defaultTimeoutMs: number;
+    retentionDays: number;
     weakOnlineHint: boolean;
 };
 
@@ -63,12 +66,13 @@ export type ExportBundle = {
     exportedAt: number;
     settings: AppSettings;
     monitors: MonitorConfig[];
-    samples: ProbeSample[];
+    samples?: ProbeSample[];
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
     defaultWindowSize: 60,
-    defaultIntervalMs: 1_000,
-    defaultTimeoutMs: 1_000,
+    defaultIntervalMs: 5000, // 5 seconds default seems reasonable
+    defaultTimeoutMs: 5000,
+    retentionDays: 30,
     weakOnlineHint: true,
 };

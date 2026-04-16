@@ -20,6 +20,7 @@ const {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#020617" />
     <meta name="description" content={description} />
+    <link rel="icon" type="image/png" href="/pwa-192x192.png" />
     <link rel="apple-touch-icon" href="/pwa-192x192.png" />
     <title>{title}</title>
     {pwaInfo && <Fragment set:html={pwaInfo.webManifest.linkTag} />}
@@ -28,5 +29,19 @@ const {
   <body class="min-h-screen">
     <slot />
     <ReloadPrompt />
+    <script>
+      // Initialize Shared Worker globally
+      if (typeof SharedWorker !== 'undefined') {
+        try {
+          const worker = new SharedWorker(new URL('../lib/worker.ts', import.meta.url), { type: 'module' });
+          worker.port.start();
+
+          // Make worker accessible for manual refreshes
+          (window as any).notmynet_worker = worker;
+        } catch (e) {
+          console.error('Failed to start SharedWorker:', e);
+        }
+      }
+    </script>
   </body>
 </html>
