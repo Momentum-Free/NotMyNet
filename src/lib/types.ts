@@ -66,7 +66,7 @@ export type ExportBundle = {
     exportedAt: number;
     settings: AppSettings;
     monitors: MonitorConfig[];
-    samples: ProbeSample[];
+    samples?: ProbeSample[];
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {

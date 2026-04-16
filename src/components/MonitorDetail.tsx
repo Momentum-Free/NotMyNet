@@ -1,7 +1,7 @@
 import { h } from "preact";
 import { useState, useEffect } from "preact/hooks";
 import type { MonitorViewModel, ProbeSample } from "../lib/types";
-import { computeSummary, getColorForState, formatDuration } from "../lib/utils";
+import { computeSummary, getColorForState, getColorValue, formatDuration } from "../lib/utils";
 import { Activity, Clock, Zap, AlertTriangle, ChevronLeft, Calendar, BarChart3, List } from "lucide-preact";
 import { listMonitors, listSamplesForMonitor } from "../lib/db";
 
@@ -50,17 +50,58 @@ export function MonitorDetail({ id }: { id: string }) {
 
     const { config, summary, samples } = model;
 
+    // Detection of background throttling/wake from sleep
+    const isThrottled = samples.length >= 2 &&
+        (samples[samples.length-1].startedAt - samples[samples.length-2].startedAt) > (config.intervalMs * 3);
+
     return (
         <div class="space-y-8">
+            {isThrottled && (
+                <div class="bg-blue-900/20 border border-blue-500/20 rounded-xl p-4 flex items-center gap-3 text-blue-300 text-sm">
+                    <Clock class="w-5 h-5 shrink-0" />
+                    <p>
+                        <strong>Monitoring resumed.</strong> A gap in data was detected, likely due to the browser being throttled or the device waking from sleep.
+                    </p>
+                </div>
+            )}
+
             <header class="flex items-center justify-between">
                 <div>
                     <h2 class="text-3xl font-bold text-slate-100">{config.name}</h2>
                     <p class="text-slate-400 font-mono text-sm mt-1">{config.url}</p>
                     {summary.currentState === "outage" && samples.length > 0 && samples[samples.length - 1].errorKind && (
-                        <p class="text-xs text-red-400 font-bold uppercase mt-2 flex items-center gap-1.5">
-                            <AlertTriangle class="w-4 h-4" />
-                            Failure Reason: {samples[samples.length - 1].errorKind}
-                        </p>
+                        <div class="mt-2">
+                            <p class="text-xs text-red-400 font-bold uppercase flex items-center gap-1.5">
+                                <AlertTriangle class="w-4 h-4" />
+                                Failure Reason: {samples[samples.length - 1].errorKind}
+                            </p>
+                            {samples[samples.length - 1].errorKind === 'network' && (
+                                <p class="text-[10px] text-slate-500 mt-1 max-w-md">
+                                    Likely a <strong>CORS policy violation</strong> or the domain is unreachable.
+                                    Browsers block cross-origin requests unless the server explicitly allows them.
+                                    <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS" target="_blank" class="text-blue-500 hover:underline ml-1">Learn more</a>
+                                </p>
+                            )}
+                        </div>
+                    )}
+                    {config.url === "https://1.1.1.1/cdn-cgi/trace" && (
+                        <div class="mt-3 p-3 bg-blue-900/30 border border-blue-500/30 rounded-lg max-w-xl">
+                            <p class="text-xs text-blue-200">
+                                <strong>Tip:</strong> This monitor uses a literal IP which may fail due to CORS on redirects.
+                                <button
+                                    onClick={async () => {
+                                        const { saveMonitor } = await import('../lib/db');
+                                        await saveMonitor({...config, url: 'https://one.one.one.one/cdn-cgi/trace'});
+                                        const worker = (window as any).notmynet_worker;
+                                        if (worker) worker.port.postMessage({ type: "refresh" });
+                                        window.location.reload();
+                                    }}
+                                    class="ml-2 underline hover:text-white transition"
+                                >
+                                    Update to one.one.one.one
+                                </button>
+                            </p>
+                        </div>
                     )}
                 </div>
                 <StatusBadge state={summary.currentState} />
@@ -78,15 +119,25 @@ export function MonitorDetail({ id }: { id: string }) {
                     <BarChart3 class="w-5 h-5 text-blue-400" />
                     Expanded Timeline (Last {samples.length} checks)
                 </h3>
-                <div class="flex flex-wrap gap-1 h-24 items-end bg-slate-950 p-3 rounded-lg border border-slate-800">
-                    {samples.map(sample => (
-                        <div
-                            key={sample.id}
-                            className={`flex-1 min-w-[4px] rounded-t-sm ${getColorForState(sample.state, sample.elapsedMs, config.degradedMs)}`}
-                            style={{ height: sample.state === "outage" ? '100%' : sample.elapsedMs ? `${Math.min(100, (sample.elapsedMs / config.degradedMs) * 100)}%` : '20%' }}
-                            title={`${sample.elapsedMs ? sample.elapsedMs + 'ms' : 'Outage'} @ ${new Date(sample.startedAt).toLocaleTimeString()}`}
-                        ></div>
-                    ))}
+                <div class="flex flex-nowrap gap-[1px] h-32 items-end bg-slate-950 p-3 rounded-lg border border-slate-800 overflow-hidden">
+                    {Array.from({ length: 200 }).map((_, i) => {
+                        // Right-align samples: the last sample in the array should be at index 199
+                        const sampleIndex = i - (200 - samples.length);
+                        const sample = sampleIndex >= 0 ? samples[sampleIndex] : null;
+
+                        if (!sample) return <div key={i} class="flex-1 min-w-[1px] bg-slate-900/30 h-1 rounded-t-sm"></div>;
+                        return (
+                            <div
+                                key={sample.id}
+                                class="flex-1 min-w-[1px] rounded-t-sm transition-all hover:opacity-80"
+                                style={{
+                                    height: sample.state === "outage" ? '100%' : sample.elapsedMs ? `${Math.max(5, Math.min(100, (sample.elapsedMs / (config.degradedMs * 1.5)) * 100))}%` : '20%',
+                                    backgroundColor: getColorValue(sample.state, sample.elapsedMs, config.degradedMs)
+                                }}
+                                title={`${sample.elapsedMs ? sample.elapsedMs + 'ms' : 'Outage'} @ ${new Date(sample.startedAt).toLocaleTimeString()}`}
+                            ></div>
+                        );
+                    })}
                 </div>
                 <div class="flex justify-between mt-2 text-[10px] uppercase font-bold text-slate-500 px-1">
                     <span>{samples.length > 0 ? new Date(samples[0].startedAt).toLocaleTimeString() : ""}</span>

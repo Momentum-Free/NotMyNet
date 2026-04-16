@@ -52,15 +52,12 @@ export function Settings() {
     const handleExport = async () => {
         const monitors = await listMonitors();
         const settings = await getSettings();
-        const allSamples = await Promise.all(monitors.map(m => listSamplesForMonitor(m.id)));
-        const samples = allSamples.flat();
 
         const bundle: ExportBundle = {
             version: 1,
             exportedAt: Date.now(),
             settings,
             monitors,
-            samples,
         };
 
         const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
@@ -87,7 +84,7 @@ export function Settings() {
                 throw new Error("Unsupported export version");
             }
 
-            if (!Array.isArray(bundle.monitors) || !Array.isArray(bundle.samples)) {
+            if (!Array.isArray(bundle.monitors)) {
                 throw new Error("Invalid export bundle format");
             }
 
@@ -97,8 +94,10 @@ export function Settings() {
             }
 
             // Validate Samples
-            for (const s of bundle.samples) {
-                if (!isValidSample(s)) throw new Error(`Invalid sample object: ${s.id}`);
+            if (bundle.samples) {
+                for (const s of bundle.samples) {
+                    if (!isValidSample(s)) throw new Error(`Invalid sample object: ${s.id}`);
+                }
             }
 
             // Save settings
@@ -110,8 +109,10 @@ export function Settings() {
             for (const monitor of bundle.monitors) {
                 await saveMonitor(monitor);
             }
-            for (const sample of bundle.samples) {
-                await addSample(sample);
+            if (bundle.samples) {
+                for (const sample of bundle.samples) {
+                    await addSample(sample);
+                }
             }
 
             // Notify worker

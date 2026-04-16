@@ -51,17 +51,32 @@ export function computeSummary(
 }
 
 export function getColorForState(state: ProbeState, latency?: number, degradedMs: number = 500) {
-    if (state === "outage") return "bg-red-500";
+    if (state === "outage") return "bg-red-600";
     if (state === "degraded") return "bg-orange-500";
 
     if (latency !== undefined) {
         if (latency < degradedMs * 0.2) return "bg-emerald-400";
-        if (latency < degradedMs * 0.5) return "bg-emerald-500";
-        if (latency < degradedMs * 0.8) return "bg-green-500";
+        if (latency < degradedMs * 0.4) return "bg-emerald-500";
+        if (latency < degradedMs * 0.6) return "bg-green-500";
+        if (latency < degradedMs * 0.8) return "bg-yellow-400";
         return "bg-yellow-500";
     }
 
     return "bg-emerald-500";
+}
+
+export function getColorValue(state: ProbeState, latency?: number, degradedMs: number = 500): string {
+    if (state === "outage") return "#dc2626"; // red-600
+    if (state === "degraded") return "#f97316"; // orange-500
+
+    if (latency !== undefined) {
+        const ratio = Math.min(1, latency / degradedMs);
+        // HSL: 150 (Emerald-ish) -> 45 (Yellow-ish)
+        const hue = 150 - (ratio * 105);
+        return `hsl(${hue}, 75%, 45%)`;
+    }
+
+    return "#10b981"; // emerald-500
 }
 
 export function formatDuration(ms: number) {

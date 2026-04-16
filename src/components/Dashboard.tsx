@@ -1,7 +1,7 @@
 import { h } from "preact";
 import { useState, useEffect, useMemo } from "preact/hooks";
 import type { MonitorViewModel, ProbeSample, ProbeState } from "../lib/types";
-import { computeSummary, getColorForState, formatDuration } from "../lib/utils";
+import { computeSummary, getColorForState, getColorValue, formatDuration } from "../lib/utils";
 import { Activity, Clock, Zap, AlertTriangle, Trash2, Edit2, ExternalLink } from "lucide-preact";
 import { listMonitors, listSamplesForMonitor, deleteMonitor, saveMonitor } from "../lib/db";
 import { CLOUDFLARE_PRESET } from "../lib/probes/http";
@@ -24,7 +24,28 @@ export function Dashboard() {
     };
 
     useEffect(() => {
-        loadData();
+        const init = async () => {
+            const configs = await listMonitors();
+            if (configs.length === 0) {
+                const now = Date.now();
+                const config = {
+                    ...CLOUDFLARE_PRESET,
+                    id: crypto.randomUUID(),
+                    createdAt: now,
+                    updatedAt: now,
+                } as any;
+                await saveMonitor(config);
+
+                // Notify worker
+                const worker = (window as any).notmynet_worker;
+                if (worker) {
+                    worker.port.postMessage({ type: "refresh" });
+                }
+            }
+            loadData();
+        };
+
+        init();
 
         const bc = new BroadcastChannel("notmynet_updates");
         bc.onmessage = (msg) => {
@@ -66,6 +87,11 @@ export function Dashboard() {
         const worker = (window as any).notmynet_worker;
         if (worker) {
             worker.port.postMessage({ type: "refresh" });
+        }
+
+        // Request persistence
+        if (navigator.storage && navigator.storage.persist) {
+            await navigator.storage.persist();
         }
 
         loadData();
@@ -166,14 +192,15 @@ function MonitorCard({ model, onDelete }: { model: MonitorViewModel, onDelete: (
                     <Stat label="Last Probe" value={summary.lastProbeAt ? new Date(summary.lastProbeAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "N/A"} icon={<Clock class="w-3 h-3" />} class="hidden md:block lg:block" />
                 </div>
 
-                <div class="flex gap-[2px] h-8 w-full bg-slate-950 rounded overflow-hidden p-[2px]">
+                <div class="flex flex-nowrap gap-[1px] h-8 w-full bg-slate-950 rounded overflow-hidden p-[2px]">
                     {Array.from({ length: config.windowSize }).map((_, i) => {
                         const sample = samples[i + samples.length - config.windowSize];
                         if (!sample) return <div key={i} class="flex-1 bg-slate-800/30 rounded-sm"></div>;
                         return (
                             <div
                                 key={sample.id}
-                                class={`flex-1 rounded-sm ${getColorForState(sample.state, sample.elapsedMs, config.degradedMs)}`}
+                                class="flex-1 min-w-[1px] rounded-sm"
+                                style={{ backgroundColor: getColorValue(sample.state, sample.elapsedMs, config.degradedMs) }}
                                 title={sample.elapsedMs ? `${sample.elapsedMs}ms` : sample.errorKind || "Outage"}
                             ></div>
                         );

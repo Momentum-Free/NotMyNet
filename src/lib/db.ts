@@ -31,6 +31,10 @@ export function openDb() {
                 samples.createIndex("by-monitor", "monitorId", {
                     unique: false,
                 });
+                samples.createIndex("by-startedAt", "startedAt", {
+                    unique: false,
+                });
+                // Composite index for monitor samples ordered by time
                 samples.createIndex(
                     "by-monitor-startedAt",
                     ["monitorId", "startedAt"],
@@ -38,9 +42,6 @@ export function openDb() {
                         unique: false,
                     },
                 );
-                samples.createIndex("by-startedAt", "startedAt", {
-                    unique: false,
-                });
             }
 
             if (!db.objectStoreNames.contains("settings")) {
