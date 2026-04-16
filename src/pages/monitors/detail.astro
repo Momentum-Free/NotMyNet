@@ -34,6 +34,7 @@ import { ChevronLeft, Edit2 } from 'lucide-preact'
     const editContainer = document.getElementById('edit-link-container');
 
     if (container && id) {
+        container.innerHTML = '';
         render(h(MonitorDetail, { id }), container);
         if (editContainer) {
             const link = document.createElement('a');

@@ -30,6 +30,7 @@ import { ChevronLeft } from 'lucide-preact'
     const container = document.getElementById('form-container');
 
     if (container && id) {
+        container.innerHTML = '';
         render(h(MonitorForm, { id }), container);
     } else if (container) {
         container.innerHTML = '<p class="text-red-400">No monitor ID provided.</p>';
