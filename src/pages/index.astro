@@ -60,17 +60,18 @@ import { Activity, Settings, Plus, AlertCircle } from 'lucide-preact'
             </p>
         </div>
         <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50 text-left">
-            <h4 class="text-slate-300 font-semibold mb-2 flex items-center gap-2">
-                <Activity class="w-4 h-4 text-emerald-400" />
+            <h2 class="text-slate-300 font-semibold mb-2 flex items-center gap-2">
+                <Activity class="w-4 h-4 text-emerald-400" aria-hidden="true" />
                 CLI Equivalents
-            </h4>
-            <p class="text-xs leading-relaxed mb-2">
-                Looking for simple Bash or Powershell equivalents that you can copy-paste to your terminal?
+            </h2>
+            <p class="text-xs leading-relaxed mb-2 text-slate-400">
+                Terminal scripts for ICMP checks. Links open GitHub Gist in a new tab.
             </p>
-            <div class="flex gap-3">
-                <a href="https://gist.github.com/Chinoman10/e7dc607b5e2db9f46f087916fcee1fc0" target="_blank" class="text-blue-500 hover:underline text-xs">Bash Gist</a>
-                <a href="https://gist.github.com/Chinoman10/ad24365807da6fee2de5f6644dbd309e" target="_blank" class="text-blue-500 hover:underline text-xs">PowerShell Gist</a>
-            </div>
+            <ul role="list" class="flex flex-wrap gap-x-4 gap-y-1 [&_a]:inline-flex [&_a]:min-h-6 [&_a]:items-center [&_a]:rounded-sm [&_a]:text-xs [&_a]:text-blue-400 [&_a]:underline [&_a:focus-visible]:outline-2 [&_a:focus-visible]:outline-offset-2 [&_a:focus-visible]:outline-blue-400">
+                <li><a href="https://gist.github.com/Chinoman10/e7dc607b5e2db9f46f087916fcee1fc0" target="_blank" rel="noopener noreferrer">Bash</a></li>
+                <li><a href="https://gist.github.com/Chinoman10/ad24365807da6fee2de5f6644dbd309e" target="_blank" rel="noopener noreferrer">PowerShell 7</a></li>
+                <li><a href="https://gist.github.com/Chinoman10/9a6cdfcc12c819ecab8fa42c4d868fcf" target="_blank" rel="noopener noreferrer">Windows PowerShell 5.1</a></li>
+            </ul>
         </div>
         </div>
     
