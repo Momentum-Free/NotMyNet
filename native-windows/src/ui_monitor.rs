@@ -18,6 +18,7 @@ use notmynet_windows::{
 };
 
 use crate::{
+    overlay::Overlay,
     ui_history::{Recent, TILE_GAP, TILE_MIN, columns},
     ui_settings,
 };
@@ -106,6 +107,8 @@ pub struct MonitorView {
     snapshot: Option<Snapshot>,
     start_error: Option<String>,
     window_error: Option<String>,
+    overlay: Overlay,
+    overlay_error: Option<String>,
     refresh: Option<Task<()>>,
     history: ScrollHandle,
     tile_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
@@ -162,6 +165,8 @@ impl MonitorView {
             snapshot: None,
             start_error: None,
             window_error: None,
+            overlay: Overlay::default(),
+            overlay_error: None,
             refresh: None,
             history: ScrollHandle::new(),
             tile_bounds: Rc::default(),
@@ -184,6 +189,7 @@ impl MonitorView {
         if appearance_changed {
             apply_theme(settings.appearance, settings_window, cx);
         }
+        self.update_overlay(cx);
         cx.notify();
         Ok(())
     }
@@ -227,11 +233,12 @@ impl MonitorView {
                     self.monitor = Some(monitor);
                     self.history.scroll_to_bottom();
                     self.start_stop.focus(window, cx);
-                    self.refresh = Some(cx.spawn_in(window, async move |view, cx| {
+                    // Foreground polling is tied to the view's lifetime, not its window drawing.
+                    self.refresh = Some(cx.spawn(async move |view, cx| {
                         let executor = cx.background_executor().clone();
                         loop {
                             executor.timer(Duration::from_millis(100)).await;
-                            let updated = cx.update(|_, cx| {
+                            let updated = cx.update(|cx| {
                                 view.update(cx, |this, cx| {
                                     let Some(monitor) = &this.monitor else {
                                         return false;
@@ -242,11 +249,14 @@ impl MonitorView {
                                     if !running {
                                         this.monitor = None;
                                     }
+                                    if !running || this.settings.overlay.enabled {
+                                        this.update_overlay(cx);
+                                    }
                                     cx.notify();
                                     running
                                 })
                             });
-                            if !matches!(updated, Ok(Ok(true))) {
+                            if !matches!(updated, Ok(true)) {
                                 break;
                             }
                         }
@@ -255,7 +265,23 @@ impl MonitorView {
                 Err(error) => self.start_error = Some(error),
             }
         }
+        self.update_overlay(cx);
         cx.notify();
+    }
+
+    fn update_overlay(&mut self, cx: &App) {
+        let config = self.settings.overlay;
+        if config.enabled
+            && self.monitor.is_some()
+            && let Some(snapshot) = &self.snapshot
+            && !matches!(snapshot.phase, Phase::Failed(_))
+        {
+            let colors = overlay_colors(&snapshot.samples, self.run_settings, cx.theme().is_dark());
+            self.overlay_error = self.overlay.update(config, &colors).err();
+        } else {
+            self.overlay.hide();
+            self.overlay_error = None;
+        }
     }
 
     fn status(&self, samples: &[Sample]) -> (Mark, &'static str, Option<String>) {
@@ -434,6 +460,12 @@ impl MonitorView {
                 )
             })
             .when(overflow, |el| el.vertical_scrollbar(&self.history))
+    }
+}
+
+impl Drop for MonitorView {
+    fn drop(&mut self) {
+        self.overlay.hide();
     }
 }
 
@@ -656,6 +688,17 @@ impl Render for MonitorView {
                                 .child(Label::new(error)),
                         )
                     })
+                    .when_some(self.overlay_error.as_deref(), |el, error| {
+                        el.child(
+                            div().id("overlay-error").role(Role::Alert).child(
+                                Label::new(format!(
+                                    "Ping strip unavailable: {error} You can change or turn off the strip in Settings."
+                                ))
+                                .text_sm()
+                                .text_color(muted),
+                            ),
+                        )
+                    })
                     .when(awaiting_restart, |el| {
                         el.child(
                             Label::new("New probe settings apply on next Start.")
@@ -837,7 +880,31 @@ fn rtt(ms: Option<u32>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Sample, link_rate, probe_detail};
+    use super::{Sample, Settings, link_rate, overlay_colors, probe_detail};
+
+    #[test]
+    fn strip_uses_history_order_and_active_run_cutoffs_in_rgb() {
+        let settings = Settings {
+            fast_ms: 10,
+            slow_ms: 20,
+            ..Settings::default()
+        };
+        let samples = [
+            Sample::Empty,
+            Sample::Reply(9),
+            Sample::Reply(10),
+            Sample::Reply(20),
+            Sample::Error("Timed out".into()),
+            Sample::Pending,
+            Sample::Skipped,
+        ];
+        assert_eq!(
+            overlay_colors(&samples, settings, false),
+            [
+                0x7b8897, 0x17632f, 0x8d6800, 0xa44810, 0xb52e36, 0x466e9e, 0x61758d
+            ]
+        );
+    }
 
     #[test]
     fn monitor_labels_preserve_probe_outcomes_and_link_rates() {
@@ -895,8 +962,9 @@ impl Mark {
     }
 }
 
-fn tile(mark: Mark, dark: bool, width: f32, height: f32) -> Div {
-    let (bg, ink, edge) = match (mark, dark) {
+// (Fill, ink, outline), as 0xRRGGBB. The strip uses the higher-contrast outline.
+fn mark_colors(mark: Mark, dark: bool) -> (u32, u32, u32) {
+    match (mark, dark) {
         (Mark::Fast, false) => (0x17632f, 0xffffff, 0x17632f),
         (Mark::Fast, true) => (0x1d5938, 0xe6ffe9, 0x59a876),
         (Mark::Medium, false) => (0xf2c420, 0x211b09, 0x8d6800),
@@ -911,7 +979,18 @@ fn tile(mark: Mark, dark: bool, width: f32, height: f32) -> Div {
         (Mark::Skipped, true) => (0x343c49, 0xd0d9e6, 0x879bb4),
         (Mark::Empty, false) => (0xf3f4f6, 0x536070, 0x7b8897),
         (Mark::Empty, true) => (0x24272d, 0xaab7c7, 0x697b92),
-    };
+    }
+}
+
+fn overlay_colors(samples: &[Sample], run_settings: Settings, dark: bool) -> Vec<u32> {
+    samples
+        .iter()
+        .map(|sample| mark_colors(Mark::for_sample(sample, run_settings), dark).2)
+        .collect()
+}
+
+fn tile(mark: Mark, dark: bool, width: f32, height: f32) -> Div {
+    let (bg, ink, edge) = mark_colors(mark, dark);
     let ink = rgb(ink);
     let glyph = match mark {
         Mark::Fast | Mark::Medium | Mark::Slow => {

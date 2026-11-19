@@ -1,18 +1,23 @@
 use gpui_kit::{
     base::{Radio, RadioGroup, StyledExt as _},
     component::{
-        ActiveTheme,
+        ActiveTheme, IndexPath,
         button::{Button, ButtonVariants},
+        checkbox::Checkbox,
         input::{Input, InputState},
         label::Label,
         scroll::ScrollableElement,
+        select::{Select, SelectItem, SelectState},
     },
     prelude::FluentBuilder as _,
     *,
 };
-use notmynet_windows::{Appearance, Settings};
+use notmynet_windows::{Appearance, OverlayEdge, OverlayMonitor, OverlaySettings, Settings};
 
-use crate::ui_monitor::{MonitorView, window_options};
+use crate::{
+    overlay,
+    ui_monitor::{MonitorView, window_options},
+};
 
 const MODES: [(Appearance, &str); 3] = [
     (Appearance::System, "System"),
@@ -27,6 +32,50 @@ const FIELDS: [&str; 5] = [
     "Fast RTT cutoff (ms)",
     "Slow RTT cutoff (ms)",
 ];
+const EDGES: [(OverlayEdge, &str); 4] = [
+    (OverlayEdge::Top, "Top"),
+    (OverlayEdge::Bottom, "Bottom"),
+    (OverlayEdge::Left, "Left"),
+    (OverlayEdge::Right, "Right"),
+];
+const THICKNESS: &str = "Thickness (1–64 physical px)";
+const TASKBAR: &str = "Behind transparent taskbar";
+const TASKBAR_HELP: &str = "Fills the taskbar area instead of using the strip thickness, only when the selected edge matches the taskbar. The strip may not show through every taskbar.";
+const OVERLAY_FIRST_ROW: usize = FIELDS.len() + 4;
+
+type OverlaySelect<T> = SelectState<Vec<OverlayChoice<T>>>;
+
+#[derive(Clone)]
+struct OverlayChoice<T>(T, SharedString);
+
+impl<T: Copy + Eq> SelectItem for OverlayChoice<T> {
+    type Value = T;
+
+    fn title(&self) -> SharedString {
+        self.1.clone()
+    }
+
+    fn value(&self) -> &T {
+        &self.0
+    }
+}
+
+fn overlay_select<T: Copy + Eq + 'static>(
+    choices: impl IntoIterator<Item = (T, impl Into<SharedString>)>,
+    selected: T,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<OverlaySelect<T>> {
+    let choices: Vec<_> = choices
+        .into_iter()
+        .map(|(value, name)| OverlayChoice(value, name.into()))
+        .collect();
+    let initial = choices
+        .iter()
+        .position(|item| item.0 == selected)
+        .map(IndexPath::new);
+    cx.new(|cx| SelectState::new(choices, initial, window, cx))
+}
 
 pub fn open(
     applied: Settings,
@@ -51,6 +100,13 @@ struct SettingsView {
     choices: [FocusHandle; 3],
     selected: usize,
     fields: [Entity<InputState>; 5],
+    overlay_enabled: bool,
+    overlay_monitor: Entity<OverlaySelect<OverlayMonitor>>,
+    overlay_edge: Entity<OverlaySelect<OverlayEdge>>,
+    thickness: Entity<InputState>,
+    behind_taskbar: bool,
+    transparency: Option<bool>,
+    overlay_focus: [FocusHandle; 4],
     scroll: ScrollHandle,
     error: Option<String>,
     _focus_scroll: Vec<Subscription>,
@@ -77,6 +133,30 @@ impl SettingsView {
             applied.slow_ms.to_string(),
         ]
         .map(|value| cx.new(|cx| InputState::new(window, cx).default_value(value)));
+        let mut screens = overlay::screens();
+        // Keep a disconnected selection rather than silently moving the strip on Apply.
+        if !screens
+            .iter()
+            .any(|(monitor, _)| *monitor == applied.overlay.monitor)
+        {
+            screens.push((
+                applied.overlay.monitor,
+                "Saved display (unavailable)".into(),
+            ));
+        }
+        let overlay_monitor = overlay_select(screens, applied.overlay.monitor, window, cx);
+        let overlay_edge = overlay_select(EDGES, applied.overlay.edge, window, cx);
+        let thickness = cx.new(|cx| {
+            InputState::new(window, cx).default_value(applied.overlay.thickness_px.to_string())
+        });
+        // Select obtains tab order from its FocusHandle in Kit 0.10. Checkboxes have
+        // their own tab stops; the surrounding handles are only for scroll-on-focus.
+        let overlay_focus = [
+            cx.focus_handle(),
+            overlay_monitor.focus_handle(cx).tab_index(8),
+            overlay_edge.focus_handle(cx).tab_index(9),
+            cx.focus_handle(),
+        ];
         let focus_scroll = choices
             .iter()
             .cloned()
@@ -87,10 +167,22 @@ impl SettingsView {
                     .enumerate()
                     .map(|(index, field)| (field.read(cx).focus_handle(cx), index + 2)),
             )
+            .chain(
+                [
+                    overlay_focus[0].clone(),
+                    overlay_focus[1].clone(),
+                    overlay_focus[2].clone(),
+                    thickness.focus_handle(cx),
+                    overlay_focus[3].clone(),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, handle)| (handle, OVERLAY_FIRST_ROW + index)),
+            )
             .collect::<Vec<_>>()
             .into_iter()
             .map(|(handle, row)| {
-                cx.on_focus(&handle, window, move |this, window, _| {
+                cx.on_focus_in(&handle, window, move |this, window, _| {
                     this.scroll.scroll_to_item(row);
                     window.refresh();
                 })
@@ -101,6 +193,13 @@ impl SettingsView {
             choices,
             selected,
             fields,
+            overlay_enabled: applied.overlay.enabled,
+            overlay_monitor,
+            overlay_edge,
+            thickness,
+            behind_taskbar: applied.overlay.behind_taskbar,
+            transparency: overlay::transparency_enabled(),
+            overlay_focus,
             scroll: ScrollHandle::new(),
             error: None,
             _focus_scroll: focus_scroll,
@@ -130,6 +229,33 @@ impl SettingsView {
             fast_ms: self.read_field(3, cx)?,
             slow_ms: self.read_field(4, cx)?,
             appearance: MODES[self.selected].0,
+            overlay: OverlaySettings {
+                enabled: self.overlay_enabled,
+                monitor: self
+                    .overlay_monitor
+                    .read(cx)
+                    .selected_value()
+                    .copied()
+                    .ok_or("Select a ping strip monitor.")?,
+                edge: self
+                    .overlay_edge
+                    .read(cx)
+                    .selected_value()
+                    .copied()
+                    .ok_or("Select a ping strip edge.")?,
+                thickness_px: self
+                    .thickness
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|px| (1..=64).contains(px))
+                    .ok_or(
+                        "Enter a whole-number ping strip thickness from 1 to 64 physical pixels.",
+                    )?,
+                behind_taskbar: self.behind_taskbar,
+            },
         }
         .validate()
     }
@@ -240,7 +366,43 @@ impl Render for SettingsView {
                     .child(Input::new(&self.fields[index]).aria_label(*name).tab_index(2 + index as isize).w(px(102.)))
             }))
             .child(Label::new("Probe settings apply next time you start. Appearance applies immediately when you select Apply.")
-                .text_sm().text_color(muted));
+                .text_sm().text_color(muted))
+            .child(div().flex().flex_col().gap_1().flex_shrink_0().pt_2().border_t_1().border_color(border)
+                .child(Label::new("Ping strip").font_semibold())
+                .child(Label::new("Click-through probe history along a monitor edge while monitoring. Applies immediately.")
+                    .text_sm().text_color(muted)))
+            .child(div().id("overlay-enabled-row").track_focus(&self.overlay_focus[0]).flex_shrink_0()
+                .child(Checkbox::new("overlay-enabled").label("Show ping strip").tab_index(7)
+                    .checked(self.overlay_enabled)
+                    .on_change(cx.listener(|this, enabled: &bool, _, cx| {
+                        this.overlay_enabled = *enabled;
+                        cx.notify();
+                    }))))
+            .child(div().flex().flex_col().gap_1().flex_shrink_0()
+                .child(Label::new("Monitor"))
+                .child(Select::new(&self.overlay_monitor).accessibility_label("Ping strip monitor").w_full()))
+            .child(div().flex().items_center().justify_between().gap_3().flex_shrink_0()
+                .child(Label::new("Edge"))
+                .child(div().w(px(102.)).flex_shrink_0().child(
+                    Select::new(&self.overlay_edge).accessibility_label("Ping strip edge").w_full())))
+            .child(div().flex().items_center().justify_between().gap_3().flex_shrink_0()
+                .child(Label::new(THICKNESS))
+                .child(Input::new(&self.thickness).aria_label("Ping strip thickness, 1 to 64 physical pixels")
+                    .tab_index(10).w(px(102.))))
+            .child(div().id("overlay-taskbar-row").track_focus(&self.overlay_focus[3]).flex().flex_col().gap_1().flex_shrink_0()
+                .child(Checkbox::new("overlay-taskbar").label(TASKBAR).tab_index(11)
+                    .aria_description(TASKBAR_HELP)
+                    .checked(self.behind_taskbar)
+                    .on_change(cx.listener(|this, enabled: &bool, _, cx| {
+                        this.behind_taskbar = *enabled;
+                        cx.notify();
+                    })))
+                .child(Label::new(TASKBAR_HELP).text_sm().text_color(muted))
+                .when_some(match self.transparency {
+                    Some(true) => None,
+                    Some(false) => Some("Windows transparency effects are off. Turn them on in Windows Settings → Personalization → Colors."),
+                    None => Some("Could not check transparency effects. Check Windows Settings → Personalization → Colors."),
+                }, |el, warning| el.child(Label::new(warning).text_sm().text_color(muted))));
 
         div()
             .id("settings-window")
@@ -249,13 +411,22 @@ impl Render for SettingsView {
             .flex_col()
             .bg(bg)
             .text_color(fg)
-            .capture_key_down(|event, window, cx| {
-                if event.keystroke.key == "escape" {
-                    window.remove_window();
-                    window.prevent_default();
-                    cx.stop_propagation();
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key != "escape" {
+                    return;
                 }
-            })
+                // An open Select exposes its list's focus handle in place of the trigger.
+                let monitor = this.overlay_monitor.focus_handle(cx);
+                let edge = this.overlay_edge.focus_handle(cx);
+                if (monitor != this.overlay_focus[1] && monitor.is_focused(window))
+                    || (edge != this.overlay_focus[2] && edge.is_focused(window))
+                {
+                    return;
+                }
+                window.remove_window();
+                window.prevent_default();
+                cx.stop_propagation();
+            }))
             .child(
                 div()
                     .min_h_0()
@@ -287,14 +458,14 @@ impl Render for SettingsView {
                     .child(
                         Button::new("cancel")
                             .label("Cancel")
-                            .tab_index(7)
+                            .tab_index(12)
                             .on_click(|_, window, _| window.remove_window()),
                     )
                     .child(
                         Button::new("apply")
                             .primary()
                             .label("Apply")
-                            .tab_index(8)
+                            .tab_index(13)
                             .on_click(cx.listener(|this, _, window, cx| this.apply(window, cx))),
                     ),
             )

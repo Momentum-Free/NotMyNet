@@ -1,3 +1,4 @@
+use crate::{OverlayEdge, OverlayMonitor, OverlaySettings};
 use std::{
     fs,
     io::{self, Write},
@@ -23,6 +24,7 @@ pub struct Settings {
     pub fast_ms: u32,
     pub slow_ms: u32,
     pub appearance: Appearance,
+    pub overlay: OverlaySettings,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             fast_ms: 20,
             slow_ms: 150,
             appearance: Appearance::System,
+            overlay: OverlaySettings::default(),
         }
     }
 }
@@ -51,6 +54,9 @@ impl Settings {
         }
         if self.fast_ms >= self.slow_ms {
             return Err("Fast RTT cutoff must be lower than Slow RTT cutoff.".into());
+        }
+        if !(1..=64).contains(&self.overlay.thickness_px) {
+            return Err("Overlay thickness must be 1–64 px.".into());
         }
         Ok(self)
     }
@@ -105,26 +111,51 @@ impl Settings {
             fast_ms,
             slow_ms,
             appearance,
+            overlay,
         } = self;
         format!(
-            "notmynet-1\n{interval_ms} {timeout_ms} {display_count} {fast_ms} {slow_ms} {appearance:?}\n"
+            "notmynet-2\n{interval_ms} {timeout_ms} {display_count} {fast_ms} {slow_ms} {appearance:?}\n{} {} {:?} {} {}\n",
+            overlay.enabled,
+            overlay.monitor.encode(),
+            overlay.edge,
+            overlay.thickness_px,
+            overlay.behind_taskbar
         )
     }
 
     fn parse(raw: &str) -> Option<Self> {
         let [
-            "notmynet-1",
+            version,
             interval,
             timeout,
             count,
             fast,
             slow,
             appearance,
+            ref rest @ ..,
         ] = raw.split_whitespace().collect::<Vec<_>>()[..]
         else {
             return None;
         };
+        let overlay = match (version, rest) {
+            ("notmynet-1", []) => OverlaySettings::default(),
+            ("notmynet-2", [enabled, monitor, edge, thickness, behind]) => OverlaySettings {
+                enabled: enabled.parse().ok()?,
+                monitor: OverlayMonitor::decode(monitor)?,
+                edge: match *edge {
+                    "Top" => OverlayEdge::Top,
+                    "Bottom" => OverlayEdge::Bottom,
+                    "Left" => OverlayEdge::Left,
+                    "Right" => OverlayEdge::Right,
+                    _ => return None,
+                },
+                thickness_px: thickness.parse().ok()?,
+                behind_taskbar: behind.parse().ok()?,
+            },
+            _ => return None,
+        };
         Self {
+            overlay,
             interval_ms: interval.parse().ok()?,
             timeout_ms: timeout.parse().ok()?,
             display_count: count.parse().ok()?,
@@ -148,9 +179,22 @@ mod tests {
 
     #[test]
     fn settings_round_trip_and_validation() {
+        let legacy = Settings::parse("notmynet-1\n1500 1200 80 30 140 Dark\n").unwrap();
+        assert_eq!(
+            (legacy.overlay, legacy.interval_ms, legacy.appearance),
+            (OverlaySettings::default(), 1500, Appearance::Dark)
+        );
+        let overlay = OverlaySettings {
+            enabled: true,
+            edge: OverlayEdge::Left,
+            monitor: OverlayMonitor::decode("004a00010023").unwrap(),
+            thickness_px: 13,
+            behind_taskbar: true,
+        };
         for appearance in [Appearance::System, Appearance::Light, Appearance::Dark] {
             let settings = Settings {
                 appearance,
+                overlay,
                 interval_ms: 50,
                 timeout_ms: 5000,
                 display_count: 600,

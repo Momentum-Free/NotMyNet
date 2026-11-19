@@ -6,6 +6,8 @@ mod ui_history;
 mod ui_monitor;
 #[cfg(windows)]
 mod ui_settings;
+#[cfg(windows)]
+use notmynet_windows::overlay;
 
 #[cfg(windows)]
 fn main() {
