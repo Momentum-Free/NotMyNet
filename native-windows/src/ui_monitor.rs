@@ -350,6 +350,7 @@ impl MonitorView {
                     .pr(px(SCROLLBAR_ROOM))
                     .track_scroll(&scroll)
                     .overflow_y_scroll()
+                    .tooltip(move |_, cx| cx.new(|_| ProbeTooltip { view: view.clone() }).into())
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -400,7 +401,6 @@ impl MonitorView {
                                 let sample = samples.get(index).unwrap_or(&Sample::Empty);
                                 let mark = Mark::for_sample(sample, cutoffs);
                                 let detail = probe_detail(sample);
-                                let view = view.clone();
                                 let position = if index + 1 == count {
                                     "Newest slot"
                                 } else if index == 0 {
@@ -412,13 +412,6 @@ impl MonitorView {
                                     .id(("sample", index))
                                     .role(Role::Label)
                                     .aria_label(format!("{position} {}, {detail}", index + 1))
-                                    .tooltip(move |_, cx| {
-                                        cx.new(|_| ProbeTooltip {
-                                            view: view.clone(),
-                                            index,
-                                        })
-                                        .into()
-                                    })
                             }))
                     }))
                     .child(
@@ -780,26 +773,24 @@ fn link_rate(bps: Option<u64>) -> String {
 
 struct ProbeTooltip {
     view: WeakEntity<MonitorView>,
-    index: usize,
 }
 
 impl Render for ProbeTooltip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text = self.view.upgrade().and_then(|view| {
             let view = view.read(cx);
-            let bounds = *view.tile_bounds.borrow().get(self.index)?;
-            // GPUI can retain the pre-scroll hitbox through a pending hover. Use the latest
-            // clipped tile geometry (including outer scroll/reflow) and the current sample.
-            if bounds.size.width <= px(0.)
-                || bounds.size.height <= px(0.)
-                || !bounds.contains(&window.mouse_position())
-            {
-                return None;
-            }
+            // One tooltip owner for the grid: retained per-tile requests must never compete.
+            // Recompute the current clipped tile under the pointer after scrolling or reflow.
+            let pointer = window.mouse_position();
+            let index = view.tile_bounds.borrow().iter().position(|bounds| {
+                bounds.size.width > px(0.)
+                    && bounds.size.height > px(0.)
+                    && bounds.contains(&pointer)
+            })?;
             let sample = view
                 .snapshot
                 .as_ref()
-                .and_then(|snap| snap.samples.get(self.index))
+                .and_then(|snap| snap.samples.get(index))
                 .unwrap_or(&Sample::Empty);
             Some(probe_detail(sample))
         });
