@@ -1,6 +1,6 @@
-# NotMyNet for Windows — development candidate
+# NotMyNet for Windows
 
-A GPUI Kit 0.10.0 native desktop monitor. This is separate from the browser app and the CLI scripts. No service, administrator privileges, raw sockets or shell commands are used by the app.
+A GPUI Kit 0.10.0 native desktop monitor, separate from the browser app and CLI scripts. Get the portable Windows 11 x64 ZIP from [GitHub Releases](https://github.com/Momentum-Free/NotMyNet/releases/latest). No service, administrator privileges, raw sockets or shell commands are used by the app.
 
 ## Build and test
 
@@ -15,7 +15,7 @@ cargo build --locked --release --target x86_64-pc-windows-msvc
 
 The Windows tests use only IP loopback and `localhost` after confirming it resolves to loopback. Non-Windows `cargo test --locked` exercises the portable history, duration and settings logic, not the UI or Windows ICMP. Cross-target `cargo check` is compilation evidence, not a Windows run.
 
-In the app, use `127.0.0.1`, `::1`, then `localhost`. Hover a reply tile and an empty tile: expect the individual RTT (including `0 ms`) or an explicit state. Check that the successful-probe streak continues beyond the display count and resets on a new run. For loopback, Link speed should say unavailable. Where authorized, use a LAN target routed over Ethernet or Wi-Fi, compare the indicated type and Rx/Tx rates to the Windows adapter's reported link rates, and verify there is no stale adapter result after switching back to loopback. Exercise Start/Stop, immediately start a different target, and confirm no old results reappear. Open Settings twice and check that it focuses the same separate window. Check Apply/Cancel, narrow/wide layout, and System against a Windows app-theme change; explicit Light and Dark should override it and persist after relaunch. Do not claim clean-Windows compatibility from a machine with build tools. Controlled timeout/overlap, 50 ms cadence in native execution, and clean standard-user launch need separate Windows evidence before handing out a build.
+In the app, use `127.0.0.1`, `::1`, then `localhost`. Hover a reply tile and an empty tile: expect the individual RTT (including `0 ms`) or an explicit state. Check that the successful-probe streak continues beyond the display count and resets on a new run. For loopback, Link speed should say unavailable. Where authorized, use a LAN target routed over Ethernet or Wi-Fi, compare the indicated type and Rx/Tx rates to the Windows adapter's reported link rates, and verify there is no stale adapter result after switching back to loopback. Exercise Start/Stop, immediately start a different target, and confirm no old results reappear. Open Settings twice and check that it focuses the same separate window. Check Apply/Cancel, narrow/wide layout, and System against a Windows app-theme change; explicit Light and Dark should override it and persist after relaunch. A CI launch check is not a clean standard-user Windows 11 test. Controlled off-host timeout/overlap, performance at 50 ms under load, and clean-machine compatibility are not qualified by the loopback tests.
 
 ## Probe and history behavior
 

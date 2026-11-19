@@ -1,46 +1,35 @@
 # NotMyNet
-Wondering if your Internet connection is to blame or not? NotMyNet is the free, local-first solution for proving your connection is stable (or not)!
 
-## Use Cases
-- Check whether a known internet endpoint is reachable from a workstation over time.
-- Monitor a local gateway, internal HTTP service, or router UI endpoint from a laptop on a LAN.
-- Keep a rolling visual history of latency and outages while working from unstable networks.
-- Export monitor definitions and history from one browser profile and import them elsewhere.
+Is it your internet connection, or the thing you're trying to reach? NotMyNet is a free, local-first reachability monitor.
 
-## Features
-- Installable PWA
-- Offline app shell
-- Local monitor configuration
-- HTTP(S) probe type
-- Rolling window visualization
-- Current state, streak, duration, average, worst
-- JSON export/import
-- Multiple monitors
-- Basic settings
+| App | What it checks | Get it |
+| --- | --- | --- |
+| Web app | HTTP(S) endpoints reachable from your browser | [Open not-my.net](https://not-my.net/) |
+| Windows desktop | ICMP ping to one IPv4 or IPv6 address or hostname | [Latest Windows release](https://github.com/Momentum-Free/NotMyNet/releases/latest) |
 
-## Principles
-- **Local-first**: all core logic, storage, and rendering happen in the browser.
-- **Offline-first**: app shell and existing data must remain usable without internet access.
-- **Transparent**: the UI must clearly distinguish browser limits from real target failures.
-- **Deterministic**: metrics should be reproducible from stored samples.
-- **Extensible**: probe types should use adapters so future browser-compatible checks can be added.
+The installable web app keeps monitor definitions and history in the browser, supports JSON import/export, and can reopen offline. Browser restrictions still apply to its checks. The native app shows per-ping latency and loss, route-selected link speed and sampled adapter throughput, and an optional click-through Ping Strip. A missed ping does not mean an HTTP service is down.
 
-## Core User Stories
-- As a user, I can install the app and reopen it offline.
-- As a user, I can create a monitor that checks an HTTP(S) endpoint on an interval.
-- As a user, I can see whether the target is currently online, degraded, or in outage.
-- As a user, I can see the last N probe results in a colored rolling window.
-- As a user, I can configure the rolling window size, defaulting to 60.
-- As a user, I can see the current streak and how long the current state has lasted.
-- As a user, I can see rolling average latency, rolling worst latency, and all-time worst latency.
-- As a user, I can save all settings locally and keep them across reloads.
-- As a user, I can export my monitors and settings as JSON.
-- As a user, I can import a JSON file to restore monitors and settings.
+### Windows download
 
-## Tech Stack
-- **Astro** for the app shell and UI composition.
-- **TypeScript** throughout.
-- **Bun** for package management, scripts, and local tooling.
-- **Ky** for HTTP probe execution.
-- **IndexedDB** for local persistence.
-- **Service Worker** for offline app shell, installability and multi-tab coordination.
+Download the `NotMyNet-Windows-x64-*.zip` asset (not the source archive), extract it, and open `notmynet-windows.exe`. The early desktop release targets Windows 11 x64, requires no installer or elevation, and is unsigned, so SmartScreen may warn. No macOS desktop build is available. See the [Windows docs](native-windows/README.md) for settings and known limits.
+
+## Develop
+
+This is a Bun monorepo: [`apps/web`](apps/web) is the Astro + Preact workspace; [`native-windows`](native-windows) is a Rust/Cargo package with its own lockfile. Building the web app does not require a Rust toolchain.
+
+```sh
+bun install --frozen-lockfile
+bun run dev
+bun run build   # static site and PWA assets in dist/
+bun run preview
+```
+
+Cloudflare Pages builds from the repository root and publishes `dist/`. For native builds, see the [Windows toolchain and test instructions](native-windows/README.md#build-and-test).
+
+## Releases
+
+The desktop app uses SemVer in `native-windows/Cargo.toml`, tracked in the [changelog](CHANGELOG.md) and tagged `windows-v<version>`. The web app deploys independently from `main`.
+
+To release Windows: update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`; dispatch the **Windows release build** GitHub workflow for the candidate commit. After tests and the packaged app's launch check pass, download the workflow artifact, verify `SHA256SUMS.txt`, and publish its ZIP and checksum to a GitHub Release tagged at that exact commit. Use the matching changelog entry for notes. Keep the latest public release pointing to a Windows build while the website uses `/releases/latest`.
+
+[MIT License](LICENSE)

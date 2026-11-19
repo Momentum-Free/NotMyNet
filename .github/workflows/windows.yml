@@ -1,0 +1,37 @@
+name: Windows release build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: native-windows
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0-x86_64-pc-windows-msvc
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: '-C target-feature=+crt-static'
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test and build
+        run: |
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --target $env:TARGET
+          cargo test --locked --target $env:TARGET
+          cargo build --locked --release --target $env:TARGET
+      - name: Package Windows download and verify extracted app
+        id: package
+        run: |
+          .\package.ps1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ runner.temp }}/notmynet-release/*
+          if-no-files-found: error

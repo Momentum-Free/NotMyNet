@@ -3,14 +3,18 @@ import tailwindcss from "@tailwindcss/vite";
 import AstroPWA from "@vite-pwa/astro";
 import preact from "@astrojs/preact";
 
+const outDir = "../../dist";
+
 export default defineConfig({
     output: "static",
+    outDir,
     vite: {
         plugins: [tailwindcss()],
     },
     integrations: [
         preact(),
         AstroPWA({
+            outDir,
             registerType: "prompt",
             devOptions: {
                 enabled: true,
