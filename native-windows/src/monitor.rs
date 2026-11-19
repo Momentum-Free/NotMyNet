@@ -1,4 +1,4 @@
-use crate::{Phase, Sample, Settings, Snapshot, timeline::State};
+use crate::{LinkKind, LinkSpeed, Phase, Sample, Settings, Snapshot, timeline::State};
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     ptr::{null, null_mut},
@@ -18,11 +18,26 @@ use windows_sys::Win32::{
         IP_SUCCESS, IP_TTL_EXPIRED_REASSEM, IP_TTL_EXPIRED_TRANSIT, Icmp6CreateFile,
         Icmp6SendEcho2, IcmpCloseHandle, IcmpCreateFile, IcmpSendEcho,
     },
-    Networking::WinSock::{AF_INET6, IN6_ADDR, IN6_ADDR_0, SOCKADDR_IN6, SOCKADDR_IN6_0},
+    NetworkManagement::{
+        IpHelper::{
+            ConvertInterfaceIndexToLuid, GetBestInterfaceEx, GetIfEntry2, IF_TYPE_ETHERNET_CSMACD,
+            IF_TYPE_IEEE80211, MIB_IF_ROW2,
+        },
+        Ndis::{
+            IfOperStatusUp, MediaConnectStateDisconnected, NET_LUID_LH, NdisPhysicalMedium802_3,
+            NdisPhysicalMediumNative802_11, NdisPhysicalMediumUnspecified,
+            NdisPhysicalMediumWirelessLan,
+        },
+    },
+    Networking::WinSock::{
+        AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IN6_ADDR, IN6_ADDR_0, SOCKADDR_IN, SOCKADDR_IN6,
+        SOCKADDR_IN6_0,
+    },
 };
 
 static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 static REQUESTS: AtomicUsize = AtomicUsize::new(0);
+static LINK_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 // One target, up to 20 starts/s. Timeout is at most 5s; bound workers even across Stop/Start.
 const MAX_IN_FLIGHT: usize = 104;
 
@@ -46,11 +61,13 @@ impl Drop for Permit {
 enum Event {
     Stop,
     Done(u64, Sample),
+    Link(Instant, Option<LinkSpeed>),
 }
 
 struct Shared {
     start: Option<Instant>,
     timeline: State,
+    link: Option<(Instant, LinkSpeed)>,
 }
 
 pub struct Monitor {
@@ -68,6 +85,7 @@ impl Monitor {
         let state = Arc::new(Mutex::new(Shared {
             start: None,
             timeline: State::new(settings),
+            link: None,
         }));
         let stopped = Arc::new(AtomicBool::new(false));
         let stop_worker = Arc::clone(&stopped);
@@ -99,12 +117,18 @@ impl Monitor {
                     state.timeline.set_phase(Phase::Running);
                 }
                 let mut event = None;
+                let mut link_due = (!address.ip().is_loopback()).then_some(start);
+                let mut link_in_flight = false;
                 loop {
                     let mut state = state_worker.lock().unwrap();
                     loop {
                         match event.take().or_else(|| receive.try_recv().ok()) {
                             Some(Event::Stop) => return,
                             Some(Event::Done(id, outcome)) => state.timeline.complete(id, outcome),
+                            Some(Event::Link(sampled_at, link)) => {
+                                link_in_flight = false;
+                                state.link = link.map(|speed| (sampled_at, speed));
+                            }
                             None => break,
                         }
                     }
@@ -139,7 +163,30 @@ impl Monitor {
                             }
                         }
                     }
-                    let wake = state.timeline.next_tick();
+                    if !link_in_flight && link_due.is_some_and(|at| at <= Instant::now()) {
+                        link_due = Some(Instant::now() + Duration::from_secs(2));
+                        if let Some(permit) = Permit::take(&LINK_LOOKUPS, 2) {
+                            let send = send.clone();
+                            let stopped = Arc::clone(&stop_worker);
+                            link_in_flight = thread::Builder::new()
+                                .name("icmp-link".into())
+                                .spawn(move || {
+                                    let sampled_at = Instant::now();
+                                    let link = if stopped.load(Ordering::Acquire) {
+                                        None
+                                    } else {
+                                        route_link_speed(address)
+                                    };
+                                    drop(permit);
+                                    let _ = send.send(Event::Link(sampled_at, link));
+                                })
+                                .is_ok();
+                        }
+                    }
+                    let wake = if link_in_flight { None } else { link_due }
+                        .map_or(state.timeline.next_tick(), |at| {
+                            at.duration_since(start).min(state.timeline.next_tick())
+                        });
                     drop(state);
                     match receive.recv_timeout(wake.saturating_sub(start.elapsed())) {
                         Ok(message) => event = Some(message),
@@ -158,9 +205,14 @@ impl Monitor {
 
     pub fn snapshot(&self) -> Snapshot {
         let state = self.state.lock().unwrap();
-        state
+        let mut snapshot = state
             .timeline
-            .snapshot(state.start.map_or(Duration::ZERO, |start| start.elapsed()))
+            .snapshot(state.start.map_or(Duration::ZERO, |start| start.elapsed()));
+        snapshot.link_speed = state
+            .link
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(6))
+            .map(|(_, speed)| speed);
+        snapshot
     }
 }
 
@@ -214,6 +266,103 @@ fn resolve(target: &str) -> Result<SocketAddr, String> {
         .map_err(|err| format!("Hostname lookup failed: {err}"))?
         .find(address)
         .ok_or_else(|| "Hostname did not return a supported unicast address.".into())
+}
+
+fn route_link_speed(address: SocketAddr) -> Option<LinkSpeed> {
+    if address.ip().is_loopback() {
+        return None;
+    }
+    let mut row = MIB_IF_ROW2 {
+        InterfaceLuid: best_interface(address)?,
+        ..Default::default()
+    };
+    // The row is writable and initialized with the selected interface LUID.
+    if unsafe { GetIfEntry2(&mut row) } != 0 {
+        return None;
+    }
+    let speed = link_from_row(&row)?;
+    // The route can switch during the query. Drop a result for a displaced adapter.
+    let current = best_interface(address)?;
+    (unsafe { current.Value == row.InterfaceLuid.Value }).then_some(speed)
+}
+
+fn best_interface(address: SocketAddr) -> Option<NET_LUID_LH> {
+    let mut index = 0;
+    // The family-tagged socket address and output index live through the synchronous call.
+    let status = unsafe {
+        match address {
+            SocketAddr::V4(addr) => {
+                let dest = SOCKADDR_IN {
+                    sin_family: AF_INET,
+                    sin_addr: IN_ADDR {
+                        S_un: IN_ADDR_0 {
+                            S_addr: u32::from_ne_bytes(addr.ip().octets()),
+                        },
+                    },
+                    ..Default::default()
+                };
+                GetBestInterfaceEx((&raw const dest).cast(), &mut index)
+            }
+            SocketAddr::V6(addr) => {
+                let dest = sockaddr_v6(addr);
+                GetBestInterfaceEx((&raw const dest).cast(), &mut index)
+            }
+        }
+    };
+    if status != 0 || index == 0 {
+        return None;
+    }
+    let mut luid = NET_LUID_LH::default();
+    (unsafe { ConvertInterfaceIndexToLuid(index, &mut luid) } == 0).then_some(luid)
+}
+
+#[allow(non_upper_case_globals)] // Constants are spelled as in the Windows SDK.
+fn link_from_row(row: &MIB_IF_ROW2) -> Option<LinkSpeed> {
+    // HardwareInterface is the first bit of the SDK's interface flags. Do not report a VPN or
+    // virtual interface's nominal link as the physical Ethernet or Wi-Fi negotiation rate.
+    const HARDWARE: u8 = 1;
+    const NOT_MEDIA_CONNECTED: u8 = 1 << 4;
+    const ENDPOINT: u8 = 1 << 7;
+    let flags = row.InterfaceAndOperStatusFlags._bitfield;
+    if flags & HARDWARE == 0
+        || flags & (NOT_MEDIA_CONNECTED | ENDPOINT) != 0
+        || row.OperStatus != IfOperStatusUp
+        || row.MediaConnectState == MediaConnectStateDisconnected
+    {
+        return None;
+    }
+    let kind = match row.PhysicalMediumType {
+        NdisPhysicalMediumNative802_11 | NdisPhysicalMediumWirelessLan => LinkKind::Wifi,
+        NdisPhysicalMedium802_3 => LinkKind::Ethernet,
+        NdisPhysicalMediumUnspecified => match row.Type {
+            IF_TYPE_IEEE80211 => LinkKind::Wifi,
+            IF_TYPE_ETHERNET_CSMACD => LinkKind::Ethernet,
+            _ => LinkKind::Other,
+        },
+        _ => LinkKind::Other,
+    };
+    let known = |rate| (rate != 0 && rate != u64::MAX).then_some(rate);
+    let speed = LinkSpeed {
+        rx_bps: known(row.ReceiveLinkSpeed),
+        tx_bps: known(row.TransmitLinkSpeed),
+        kind,
+    };
+    (speed.rx_bps.is_some() || speed.tx_bps.is_some()).then_some(speed)
+}
+
+fn sockaddr_v6(addr: std::net::SocketAddrV6) -> SOCKADDR_IN6 {
+    SOCKADDR_IN6 {
+        sin6_family: AF_INET6,
+        sin6_addr: IN6_ADDR {
+            u: IN6_ADDR_0 {
+                Byte: addr.ip().octets(),
+            },
+        },
+        Anonymous: SOCKADDR_IN6_0 {
+            sin6_scope_id: addr.scope_id(),
+        },
+        ..Default::default()
+    }
 }
 
 struct EchoHandle(HANDLE);
@@ -275,18 +424,7 @@ fn echo(address: SocketAddr, timeout: u32, can_send: impl Fn() -> bool) -> Sampl
                     sin6_family: AF_INET6,
                     ..Default::default()
                 };
-                let destination = SOCKADDR_IN6 {
-                    sin6_family: AF_INET6,
-                    sin6_addr: IN6_ADDR {
-                        u: IN6_ADDR_0 {
-                            Byte: addr.ip().octets(),
-                        },
-                    },
-                    Anonymous: SOCKADDR_IN6_0 {
-                        sin6_scope_id: addr.scope_id(),
-                    },
-                    ..Default::default()
-                };
+                let destination = sockaddr_v6(addr);
                 if !can_send() {
                     return Sample::Skipped;
                 }
@@ -405,6 +543,50 @@ mod tests {
     }
 
     #[test]
+    fn adapter_rate_mapping_is_directional_and_excludes_virtual_links() {
+        let mut row = MIB_IF_ROW2 {
+            Type: IF_TYPE_ETHERNET_CSMACD,
+            OperStatus: IfOperStatusUp,
+            ReceiveLinkSpeed: 2_500_000_000,
+            TransmitLinkSpeed: 1_000_000_000,
+            ..Default::default()
+        };
+        assert_eq!(link_from_row(&row), None);
+        row.InterfaceAndOperStatusFlags._bitfield = 1;
+        assert_eq!(
+            link_from_row(&row),
+            Some(LinkSpeed {
+                rx_bps: Some(2_500_000_000),
+                tx_bps: Some(1_000_000_000),
+                kind: LinkKind::Ethernet
+            })
+        );
+        for flag in [1 << 4, 1 << 7] {
+            row.InterfaceAndOperStatusFlags._bitfield = 1 | flag;
+            assert_eq!(link_from_row(&row), None);
+        }
+        row.InterfaceAndOperStatusFlags._bitfield = 1;
+        row.PhysicalMediumType =
+            windows_sys::Win32::NetworkManagement::Ndis::NdisPhysicalMediumBluetooth;
+        assert_eq!(link_from_row(&row).unwrap().kind, LinkKind::Other);
+        row.PhysicalMediumType = NdisPhysicalMediumNative802_11;
+        row.TransmitLinkSpeed = u64::MAX;
+        assert_eq!(
+            link_from_row(&row),
+            Some(LinkSpeed {
+                rx_bps: Some(2_500_000_000),
+                tx_bps: None,
+                kind: LinkKind::Wifi
+            })
+        );
+        row.ReceiveLinkSpeed = 0;
+        assert_eq!(link_from_row(&row), None);
+        row.ReceiveLinkSpeed = 1_000_000_000;
+        row.MediaConnectState = MediaConnectStateDisconnected;
+        assert_eq!(link_from_row(&row), None);
+    }
+
+    #[test]
     fn native_loopback_and_localhost() {
         for target in ["127.0.0.1", "::1", "localhost"] {
             let address = resolve(target).unwrap();
@@ -412,6 +594,7 @@ mod tests {
                 address.ip().is_loopback(),
                 "{target} resolved outside loopback"
             );
+            assert_eq!(route_link_speed(address), None);
             let result = echo(address, 1000, || true);
             assert!(matches!(result, Sample::Reply(_)), "{target}: {result:?}");
             eprintln!("{target} ({address}): {result:?}");

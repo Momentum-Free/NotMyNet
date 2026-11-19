@@ -17,6 +17,20 @@ pub enum Sample {
     LocalError(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    Ethernet,
+    Wifi,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkSpeed {
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub kind: LinkKind,
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub phase: Phase,
@@ -26,6 +40,8 @@ pub struct Snapshot {
     pub last_reply_ms: Option<u32>,
     pub total_sent: u64,
     pub total_replies: u64,
+    pub success_streak: u64,
+    pub link_speed: Option<LinkSpeed>,
 }
 
 pub fn format_duration(duration: Duration) -> String {
@@ -64,6 +80,9 @@ mod engine {
         last_reply: Option<(u64, u32)>,
         sent: u64,
         replies: u64,
+        // Merge contiguous reply ranges; only unresolved gaps after the last break need separate ranges.
+        streak_ranges: BTreeMap<u64, u64>,
+        last_break: Option<u64>,
     }
 
     impl State {
@@ -78,6 +97,8 @@ mod engine {
                 last_reply: None,
                 sent: 0,
                 replies: 0,
+                streak_ranges: BTreeMap::new(),
+                last_break: None,
             }
         }
 
@@ -102,6 +123,11 @@ mod engine {
                 return None;
             }
             let send = permit && now < self.send_before(due);
+            if !send {
+                self.break_streak(due);
+            } else if due > self.next {
+                self.break_streak(due - 1);
+            }
             let skipped = (due - self.next).min(self.history.len() as u64 - 1);
             for _ in 0..skipped {
                 self.history.pop_front();
@@ -125,6 +151,7 @@ mod engine {
                 return;
             };
             if let Sample::Reply(ms) = sample {
+                self.extend_streak(id);
                 self.sent += 1;
                 self.replies += 1;
                 if self.last_reply.is_none_or(|(last, _)| id > last) {
@@ -140,11 +167,37 @@ mod engine {
                     }
                 }
             }
+            if !matches!(sample, Sample::Reply(_)) {
+                self.break_streak(id);
+            }
             let offset = self.next - id;
             if offset <= self.history.len() as u64 {
                 let index = self.history.len() - offset as usize;
                 self.history[index] = sample;
             }
+        }
+
+        fn break_streak(&mut self, id: u64) {
+            if self.last_break.is_none_or(|last| id > last) {
+                self.last_break = Some(id);
+                self.streak_ranges = self.streak_ranges.split_off(&(id + 1));
+            }
+        }
+
+        fn extend_streak(&mut self, id: u64) {
+            if self.last_break.is_some_and(|last| id <= last) {
+                return;
+            }
+            let start = if let Some((&start, &end)) = self.streak_ranges.range(..id).next_back()
+                && end + 1 == id
+            {
+                self.streak_ranges.remove(&start);
+                start
+            } else {
+                id
+            };
+            let end = self.streak_ranges.remove(&(id + 1)).unwrap_or(id);
+            self.streak_ranges.insert(start, end);
         }
 
         pub(crate) fn snapshot(&self, now: Duration) -> Snapshot {
@@ -158,6 +211,11 @@ mod engine {
                 last_reply_ms: self.last_reply.map(|(_, ms)| ms),
                 total_sent: self.sent,
                 total_replies: self.replies,
+                success_streak: self
+                    .streak_ranges
+                    .last_key_value()
+                    .map_or(0, |(start, end)| end - start + 1),
+                link_speed: None,
             }
         }
     }
@@ -225,6 +283,33 @@ mod engine {
                 state.snapshot(ms(86_400_000)).samples,
                 [Sample::Skipped, Sample::Skipped]
             );
+        }
+
+        #[test]
+        fn streak_survives_ring_wrap_and_handles_out_of_order_results() {
+            let mut state = State::new(Settings {
+                display_count: 1,
+                ..Settings::default()
+            });
+            for slot in 0..4 {
+                state.tick(ms(slot * 1000), true);
+            }
+            state.complete(3, Sample::Reply(2));
+            state.complete(1, Sample::Reply(0));
+            assert_eq!(state.snapshot(ms(3050)).success_streak, 1);
+            state.complete(2, Sample::Reply(7));
+            state.complete(0, Sample::Reply(8));
+            assert_eq!(state.snapshot(ms(3100)).success_streak, 4);
+            state.tick(ms(4000), true);
+            state.tick(ms(5000), true);
+            state.complete(5, error());
+            state.complete(4, Sample::Reply(7));
+            assert_eq!(state.snapshot(ms(5100)).success_streak, 0);
+            state.tick(ms(6000), true);
+            state.complete(6, Sample::Reply(7));
+            assert_eq!(state.snapshot(ms(6100)).success_streak, 1);
+            state.tick(ms(7000), false);
+            assert_eq!(state.snapshot(ms(7100)).success_streak, 0);
         }
 
         #[test]

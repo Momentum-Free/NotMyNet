@@ -1,18 +1,21 @@
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use gpui_kit::{
     base::StyledExt as _,
     component::{
-        ActiveTheme, IconName, Theme, ThemeMode,
+        ActiveTheme, Icon, IconName, Theme, ThemeMode,
         button::{Button, ButtonVariants},
         input::{Input, InputEvent, InputState},
         label::Label,
         scroll::ScrollableElement,
+        tooltip::Tooltip,
     },
     prelude::FluentBuilder as _,
     *,
 };
-use notmynet_windows::{Appearance, Monitor, Phase, Sample, Settings, Snapshot, format_duration};
+use notmynet_windows::{
+    Appearance, LinkKind, LinkSpeed, Monitor, Phase, Sample, Settings, Snapshot, format_duration,
+};
 
 use crate::{
     ui_history::{Recent, TILE_GAP, TILE_MIN, columns},
@@ -22,9 +25,10 @@ use crate::{
 const PAD: f32 = 22.;
 const SCROLLBAR_ROOM: f32 = 12.;
 const DASH: &str = "—";
+const UNAVAILABLE: &str = "Unavailable";
 
 pub fn run() {
-    application().with_assets(assets::Assets).run(|cx| {
+    application().with_assets(assets::AllAssets).run(|cx| {
         gpui_kit::init(cx);
         let settings = Settings::load();
         let (main, _) = gpui_kit::open_window(
@@ -104,6 +108,7 @@ pub struct MonitorView {
     window_error: Option<String>,
     refresh: Option<Task<()>>,
     history: ScrollHandle,
+    tile_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     history_focus: FocusHandle,
     _subscriptions: [Subscription; 3],
 }
@@ -159,6 +164,7 @@ impl MonitorView {
             window_error: None,
             refresh: None,
             history: ScrollHandle::new(),
+            tile_bounds: Rc::default(),
             history_focus: cx.focus_handle(),
             _subscriptions: [target_events, appearance, close],
         }
@@ -205,7 +211,10 @@ impl MonitorView {
 
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(monitor) = self.monitor.take() {
-            self.snapshot = Some(monitor.snapshot());
+            let mut snapshot = monitor.snapshot();
+            // RTT is historical; link rate is live route metadata and should not freeze on Stop.
+            snapshot.link_speed = None;
+            self.snapshot = Some(snapshot);
             self.refresh = None;
         } else {
             let target = self.target.read(cx).value();
@@ -315,8 +324,10 @@ impl MonitorView {
         let muted = cx.theme().muted_foreground;
         let ring = cx.theme().ring;
         let dark = cx.theme().is_dark();
-        let empty = Sample::Empty;
+        let view = cx.weak_entity();
         let scroll = self.history.clone();
+        let tile_bounds = Rc::clone(&self.tile_bounds);
+        tile_bounds.borrow_mut().resize(count, Bounds::default());
         // Start at the newest tail and follow it through reflow; respect a user who scrolls back.
         if scroll.offset().y <= -scroll.max_offset().y + px(1.) {
             scroll.scroll_to_bottom();
@@ -330,7 +341,11 @@ impl MonitorView {
             .h(height)
             .child(
                 div()
-                    .id("history-scroll")
+                    // A reflow invalidates the tooltip's original hitbox.
+                    .id(format!(
+                        "history-scroll-{}-{count}-{row_limit}",
+                        width.to_bits()
+                    ))
                     .size_full()
                     .pr(px(SCROLLBAR_ROOM))
                     .track_scroll(&scroll)
@@ -366,16 +381,26 @@ impl MonitorView {
                     })
                     .child(Label::new("Oldest").text_xs().text_color(muted))
                     .children((0..rows).map(|row| {
-                        div().flex().flex_shrink_0().gap(px(TILE_GAP)).children(
-                            (row * cols..((row + 1) * cols).min(count)).map(|index| {
-                                let sample = samples.get(index).unwrap_or(&empty);
+                        let row_bounds = Rc::clone(&tile_bounds);
+                        div()
+                            .on_children_prepainted(move |bounds, window, _| {
+                                let mask = window.content_mask().bounds;
+                                for (column, bounds) in bounds.into_iter().enumerate() {
+                                    if let Some(tile) =
+                                        row_bounds.borrow_mut().get_mut(row * cols + column)
+                                    {
+                                        *tile = bounds.intersect(&mask);
+                                    }
+                                }
+                            })
+                            .flex()
+                            .flex_shrink_0()
+                            .gap(px(TILE_GAP))
+                            .children((row * cols..((row + 1) * cols).min(count)).map(|index| {
+                                let sample = samples.get(index).unwrap_or(&Sample::Empty);
                                 let mark = Mark::for_sample(sample, cutoffs);
-                                let detail = match sample {
-                                    Sample::Reply(ms) => format!("Reply, {ms} ms"),
-                                    Sample::Error(reason) => format!("Error/Timeout: {reason}"),
-                                    Sample::LocalError(reason) => format!("Local error: {reason}"),
-                                    _ => mark.name().to_string(),
-                                };
+                                let detail = probe_detail(sample);
+                                let view = view.clone();
                                 let position = if index + 1 == count {
                                     "Newest slot"
                                 } else if index == 0 {
@@ -387,8 +412,14 @@ impl MonitorView {
                                     .id(("sample", index))
                                     .role(Role::Label)
                                     .aria_label(format!("{position} {}, {detail}", index + 1))
-                            }),
-                        )
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| ProbeTooltip {
+                                            view: view.clone(),
+                                            index,
+                                        })
+                                        .into()
+                                    })
+                            }))
                     }))
                     .child(
                         div()
@@ -439,6 +470,8 @@ impl Render for MonitorView {
             .and_then(|s| s.outage_elapsed)
             .map_or_else(|| DASH.into(), format_duration);
         let last_reply = rtt(snapshot.and_then(|s| s.last_reply_ms));
+        let streak = snapshot.map_or_else(|| DASH.into(), |s| s.success_streak.to_string());
+        let link = snapshot.and_then(|s| s.link_speed.as_ref());
         let width = f32::from(window.viewport_size().width) - 2. * PAD - SCROLLBAR_ROOM;
         let awaiting_restart =
             running && probe_values(self.settings) != probe_values(self.run_settings);
@@ -594,7 +627,9 @@ impl Render for MonitorView {
                             session
                         },
                         muted,
-                    )),
+                    ))
+                    .child(metric("Streak", streak, muted))
+                    .child(link_metric(link, muted)),
             );
 
         div()
@@ -680,8 +715,147 @@ fn metric(label: &'static str, value: String, muted: Hsla) -> Div {
         .child(Label::new(value).font_semibold())
 }
 
+fn link_metric(link: Option<&LinkSpeed>, muted: Hsla) -> Div {
+    let kind = link.map(|link| match link.kind {
+        LinkKind::Ethernet => ("Ethernet", Some(assets::IconName::EthernetPort)),
+        LinkKind::Wifi => ("Wi-Fi", Some(assets::IconName::Wifi)),
+        LinkKind::Other => ("Other adapter", None),
+    });
+    let rx = link.and_then(|link| link.rx_bps);
+    let tx = link.and_then(|link| link.tx_bps);
+    let reported = rx.is_some() || tx.is_some();
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .min_w_0()
+        .gap_x_2()
+        .gap_y_1()
+        .child(Label::new("Negotiated link speed").text_color(muted))
+        .when_some(kind, |el, (name, icon)| {
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .gap_1()
+                    .when_some(icon, |el, icon| {
+                        el.child(Icon::new(icon).size(px(14.)).text_color(muted))
+                    })
+                    .child(Label::new(name)),
+            )
+        })
+        .when(reported, |el| {
+            el.child(metric("Rx", link_rate(rx), muted).flex_shrink_0())
+                .child(metric("Tx", link_rate(tx), muted).flex_shrink_0())
+                .child(
+                    Label::new("Adapter-reported, not traffic")
+                        .text_xs()
+                        .text_color(muted),
+                )
+        })
+        .when(!reported, |el| {
+            el.child(Label::new(UNAVAILABLE).font_semibold())
+        })
+}
+
+fn link_rate(bps: Option<u64>) -> String {
+    let Some(bps) = bps else {
+        return UNAVAILABLE.into();
+    };
+    let (divisor, unit) = if bps >= 1_000_000_000 {
+        (1_000_000_000., "Gbps")
+    } else {
+        (1_000_000., "Mbps")
+    };
+    if (1..10_000).contains(&bps) {
+        return "<0.01 Mbps".into();
+    }
+    let rate = format!("{:.2}", bps as f64 / divisor);
+    format!(
+        "{} {unit}",
+        rate.trim_end_matches('0').trim_end_matches('.')
+    )
+}
+
+struct ProbeTooltip {
+    view: WeakEntity<MonitorView>,
+    index: usize,
+}
+
+impl Render for ProbeTooltip {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let text = self.view.upgrade().and_then(|view| {
+            let view = view.read(cx);
+            let bounds = *view.tile_bounds.borrow().get(self.index)?;
+            // GPUI can retain the pre-scroll hitbox through a pending hover. Use the latest
+            // clipped tile geometry (including outer scroll/reflow) and the current sample.
+            if bounds.size.width <= px(0.)
+                || bounds.size.height <= px(0.)
+                || !bounds.contains(&window.mouse_position())
+            {
+                return None;
+            }
+            let sample = view
+                .snapshot
+                .as_ref()
+                .and_then(|snap| snap.samples.get(self.index))
+                .unwrap_or(&Sample::Empty);
+            Some(probe_detail(sample))
+        });
+        div().when_some(text, |el, text| {
+            el.child(Tooltip::new(text).build(window, cx))
+        })
+    }
+}
+
+fn probe_detail(sample: &Sample) -> String {
+    match sample {
+        Sample::Reply(ms) => format!("Reply, {ms} ms"),
+        Sample::Error(reason) => format!("Error/Timeout: {reason}"),
+        Sample::LocalError(reason) => format!("Local error: {reason}"),
+        Sample::Pending => "Pending".into(),
+        Sample::Skipped => "Skipped".into(),
+        Sample::Empty => "Not sampled".into(),
+    }
+}
+
 fn rtt(ms: Option<u32>) -> String {
     ms.map_or_else(|| DASH.into(), |ms| format!("{ms} ms"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Sample, link_rate, probe_detail};
+
+    #[test]
+    fn monitor_labels_preserve_probe_outcomes_and_link_rates() {
+        for (sample, expected) in [
+            (Sample::Reply(0), "Reply, 0 ms"),
+            (
+                Sample::Error("Timed out".into()),
+                "Error/Timeout: Timed out",
+            ),
+            (
+                Sample::LocalError("ICMP unavailable".into()),
+                "Local error: ICMP unavailable",
+            ),
+            (Sample::Pending, "Pending"),
+            (Sample::Skipped, "Skipped"),
+            (Sample::Empty, "Not sampled"),
+        ] {
+            assert_eq!(probe_detail(&sample), expected);
+        }
+        for (bps, expected) in [
+            (None, "Unavailable"),
+            (Some(5_000), "<0.01 Mbps"),
+            (Some(144_400_000), "144.4 Mbps"),
+            (Some(1_000_000_000), "1 Gbps"),
+            (Some(2_500_000_000), "2.5 Gbps"),
+        ] {
+            assert_eq!(link_rate(bps), expected);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -705,16 +879,6 @@ impl Mark {
             Sample::Pending => Self::Pending,
             Sample::Skipped => Self::Skipped,
             Sample::Empty => Self::Empty,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Pending => "Pending",
-            Self::Skipped => "Skipped",
-            Self::Empty => "Not sampled",
-            Self::Fast | Self::Medium | Self::Slow => "Reply",
-            Self::Error => "Error/Timeout",
         }
     }
 }

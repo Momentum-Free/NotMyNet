@@ -6,4 +6,4 @@ mod timeline;
 #[cfg(windows)]
 pub use monitor::Monitor;
 pub use settings::{Appearance, Settings};
-pub use timeline::{Phase, Sample, Snapshot, format_duration};
+pub use timeline::{LinkKind, LinkSpeed, Phase, Sample, Snapshot, format_duration};
