@@ -1,6 +1,8 @@
 name: Windows release build
 
 on:
+  push:
+    branches: ['release/windows-*']
   workflow_dispatch:
 
 permissions:
@@ -21,11 +23,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Test and build
-        run: |
-          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --target $env:TARGET
-          cargo test --locked --target $env:TARGET
-          cargo build --locked --release --target $env:TARGET
+      - name: Install Rust
+        run: rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --target $env:TARGET
+      - name: Test
+        run: cargo test --locked --target $env:TARGET
+      - name: Build release
+        run: cargo build --locked --release --target $env:TARGET
       - name: Package Windows download and verify extracted app
         id: package
         run: |

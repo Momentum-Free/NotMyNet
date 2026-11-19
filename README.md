@@ -30,6 +30,6 @@ Cloudflare Pages builds from the repository root and publishes `dist/`. For nati
 
 The desktop app uses SemVer in `native-windows/Cargo.toml`, tracked in the [changelog](CHANGELOG.md) and tagged `windows-v<version>`. The web app deploys independently from `main`.
 
-To release Windows: update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`; dispatch the **Windows release build** GitHub workflow for the candidate commit. After tests and the packaged app's launch check pass, download the workflow artifact, verify `SHA256SUMS.txt`, and publish its ZIP and checksum to a GitHub Release tagged at that exact commit. Use the matching changelog entry for notes. Keep the latest public release pointing to a Windows build while the website uses `/releases/latest`.
+To release Windows: update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`; push the candidate to a `release/windows-*` branch to run the **Windows release build** workflow. It can also be dispatched manually. After tests and the packaged app's launch check pass, download the workflow artifact, verify `SHA256SUMS.txt`, and publish its ZIP and checksum to a GitHub Release tagged at that exact commit. Use the matching changelog entry for notes. Keep the latest public release pointing to a Windows build while the website uses `/releases/latest`.
 
 [MIT License](LICENSE)
