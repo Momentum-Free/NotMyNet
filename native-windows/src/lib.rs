@@ -1,3 +1,5 @@
+#[cfg(any(windows, test))]
+mod link_peak;
 #[cfg(windows)]
 mod monitor;
 mod settings;

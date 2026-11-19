@@ -42,6 +42,8 @@ pub struct Snapshot {
     pub total_replies: u64,
     pub success_streak: u64,
     pub link_speed: Option<LinkSpeed>,
+    /// Peak average adapter traffic rates in bits/s, receive then transmit.
+    pub peak_bps: Option<(u64, u64)>,
 }
 
 pub fn format_duration(duration: Duration) -> String {
@@ -216,6 +218,7 @@ mod engine {
                     .last_key_value()
                     .map_or(0, |(start, end)| end - start + 1),
                 link_speed: None,
+                peak_bps: None,
             }
         }
     }

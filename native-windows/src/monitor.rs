@@ -1,4 +1,6 @@
-use crate::{LinkKind, LinkSpeed, Phase, Sample, Settings, Snapshot, timeline::State};
+use crate::{
+    LinkKind, LinkSpeed, Phase, Sample, Settings, Snapshot, link_peak::LinkPeak, timeline::State,
+};
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     ptr::{null, null_mut},
@@ -61,13 +63,24 @@ impl Drop for Permit {
 enum Event {
     Stop,
     Done(u64, Sample),
-    Link(Instant, Option<LinkSpeed>),
+    Link(Option<RouteSample>),
 }
+
+struct RouteSample {
+    interface: u64,
+    sampled_at: Instant,
+    speed: LinkSpeed,
+    octets: (u64, u64),
+}
+
+const LINK_PERIOD: Duration = Duration::from_secs(2);
+const LINK_FRESHNESS: Duration = Duration::from_secs(6);
 
 struct Shared {
     start: Option<Instant>,
     timeline: State,
     link: Option<(Instant, LinkSpeed)>,
+    peak: LinkPeak,
 }
 
 pub struct Monitor {
@@ -86,6 +99,7 @@ impl Monitor {
             start: None,
             timeline: State::new(settings),
             link: None,
+            peak: LinkPeak::default(),
         }));
         let stopped = Arc::new(AtomicBool::new(false));
         let stop_worker = Arc::clone(&stopped);
@@ -125,9 +139,25 @@ impl Monitor {
                         match event.take().or_else(|| receive.try_recv().ok()) {
                             Some(Event::Stop) => return,
                             Some(Event::Done(id, outcome)) => state.timeline.complete(id, outcome),
-                            Some(Event::Link(sampled_at, link)) => {
+                            Some(Event::Link(link)) => {
                                 link_in_flight = false;
-                                state.link = link.map(|speed| (sampled_at, speed));
+                                // Pace from completion so a slow lookup cannot compress two counter samples.
+                                link_due = Some(Instant::now() + LINK_PERIOD);
+                                if let Some(link) =
+                                    link.filter(|link| link.sampled_at.elapsed() < LINK_FRESHNESS)
+                                {
+                                    let sampled_at = link.sampled_at;
+                                    if state.link.is_some_and(|(at, _)| {
+                                        sampled_at.saturating_duration_since(at) >= LINK_FRESHNESS
+                                    }) {
+                                        state.peak = LinkPeak::default();
+                                    }
+                                    state.peak.observe(link.interface, sampled_at, link.octets);
+                                    state.link = Some((sampled_at, link.speed));
+                                } else {
+                                    state.link = None;
+                                    state.peak = LinkPeak::default();
+                                }
                             }
                             None => break,
                         }
@@ -164,21 +194,20 @@ impl Monitor {
                         }
                     }
                     if !link_in_flight && link_due.is_some_and(|at| at <= Instant::now()) {
-                        link_due = Some(Instant::now() + Duration::from_secs(2));
+                        link_due = Some(Instant::now() + LINK_PERIOD);
                         if let Some(permit) = Permit::take(&LINK_LOOKUPS, 2) {
                             let send = send.clone();
                             let stopped = Arc::clone(&stop_worker);
                             link_in_flight = thread::Builder::new()
                                 .name("icmp-link".into())
                                 .spawn(move || {
-                                    let sampled_at = Instant::now();
                                     let link = if stopped.load(Ordering::Acquire) {
                                         None
                                     } else {
-                                        route_link_speed(address)
+                                        route_sample(address)
                                     };
                                     drop(permit);
-                                    let _ = send.send(Event::Link(sampled_at, link));
+                                    let _ = send.send(Event::Link(link));
                                 })
                                 .is_ok();
                         }
@@ -208,10 +237,11 @@ impl Monitor {
         let mut snapshot = state
             .timeline
             .snapshot(state.start.map_or(Duration::ZERO, |start| start.elapsed()));
-        snapshot.link_speed = state
-            .link
-            .filter(|(at, _)| at.elapsed() < Duration::from_secs(6))
-            .map(|(_, speed)| speed);
+        if let Some((_, speed)) = state.link.filter(|(at, _)| at.elapsed() < LINK_FRESHNESS) {
+            snapshot.link_speed =
+                (speed.rx_bps.is_some() || speed.tx_bps.is_some()).then_some(speed);
+            snapshot.peak_bps = state.peak.bps;
+        }
         snapshot
     }
 }
@@ -268,7 +298,7 @@ fn resolve(target: &str) -> Result<SocketAddr, String> {
         .ok_or_else(|| "Hostname did not return a supported unicast address.".into())
 }
 
-fn route_link_speed(address: SocketAddr) -> Option<LinkSpeed> {
+fn route_sample(address: SocketAddr) -> Option<RouteSample> {
     if address.ip().is_loopback() {
         return None;
     }
@@ -276,14 +306,26 @@ fn route_link_speed(address: SocketAddr) -> Option<LinkSpeed> {
         InterfaceLuid: best_interface(address)?,
         ..Default::default()
     };
-    // The row is writable and initialized with the selected interface LUID.
-    if unsafe { GetIfEntry2(&mut row) } != 0 {
+    // Timestamp the counter read itself, not the route lookup or worker start. The midpoint
+    // estimates the capture instant; drop slow calls rather than record an inflated lifetime peak.
+    let before = Instant::now();
+    // SAFETY: row is initialized, writable, and identified by its LUID.
+    let status = unsafe { GetIfEntry2(&mut row) };
+    let read_duration = before.elapsed();
+    if status != 0 || read_duration > Duration::from_millis(100) {
         return None;
     }
+    let sampled_at = before + read_duration / 2;
     let speed = link_from_row(&row)?;
     // The route can switch during the query. Drop a result for a displaced adapter.
     let current = best_interface(address)?;
-    (unsafe { current.Value == row.InterfaceLuid.Value }).then_some(speed)
+    let interface = unsafe { row.InterfaceLuid.Value };
+    (unsafe { current.Value } == interface).then_some(RouteSample {
+        interface,
+        sampled_at,
+        speed,
+        octets: (row.InOctets, row.OutOctets),
+    })
 }
 
 fn best_interface(address: SocketAddr) -> Option<NET_LUID_LH> {
@@ -342,12 +384,11 @@ fn link_from_row(row: &MIB_IF_ROW2) -> Option<LinkSpeed> {
         _ => LinkKind::Other,
     };
     let known = |rate| (rate != 0 && rate != u64::MAX).then_some(rate);
-    let speed = LinkSpeed {
+    Some(LinkSpeed {
         rx_bps: known(row.ReceiveLinkSpeed),
         tx_bps: known(row.TransmitLinkSpeed),
         kind,
-    };
-    (speed.rx_bps.is_some() || speed.tx_bps.is_some()).then_some(speed)
+    })
 }
 
 fn sockaddr_v6(addr: std::net::SocketAddrV6) -> SOCKADDR_IN6 {
@@ -580,7 +621,8 @@ mod tests {
             })
         );
         row.ReceiveLinkSpeed = 0;
-        assert_eq!(link_from_row(&row), None);
+        let unknown = link_from_row(&row).unwrap();
+        assert_eq!((unknown.rx_bps, unknown.tx_bps), (None, None));
         row.ReceiveLinkSpeed = 1_000_000_000;
         row.MediaConnectState = MediaConnectStateDisconnected;
         assert_eq!(link_from_row(&row), None);
@@ -594,7 +636,7 @@ mod tests {
                 address.ip().is_loopback(),
                 "{target} resolved outside loopback"
             );
-            assert_eq!(route_link_speed(address), None);
+            assert!(route_sample(address).is_none());
             let result = echo(address, 1000, || true);
             assert!(matches!(result, Sample::Reply(_)), "{target}: {result:?}");
             eprintln!("{target} ({address}): {result:?}");

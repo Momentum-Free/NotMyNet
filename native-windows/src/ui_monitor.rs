@@ -34,7 +34,7 @@ pub fn run() {
         let (main, _) = gpui_kit::open_window(
             window_options(
                 "NotMyNet",
-                size(px(920.), px(650.)),
+                size(px(920.), px(540.)),
                 size(px(390.), px(360.)),
                 cx,
             ),
@@ -212,7 +212,7 @@ impl MonitorView {
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(monitor) = self.monitor.take() {
             let mut snapshot = monitor.snapshot();
-            // RTT is historical; link rate is live route metadata and should not freeze on Stop.
+            // Keep the captured peak and RTT; only clear live link metadata on Stop.
             snapshot.link_speed = None;
             self.snapshot = Some(snapshot);
             self.refresh = None;
@@ -465,6 +465,7 @@ impl Render for MonitorView {
         let last_reply = rtt(snapshot.and_then(|s| s.last_reply_ms));
         let streak = snapshot.map_or_else(|| DASH.into(), |s| s.success_streak.to_string());
         let link = snapshot.and_then(|s| s.link_speed.as_ref());
+        let peak = snapshot.and_then(|s| s.peak_bps);
         let width = f32::from(window.viewport_size().width) - 2. * PAD - SCROLLBAR_ROOM;
         let awaiting_restart =
             running && probe_values(self.settings) != probe_values(self.run_settings);
@@ -621,8 +622,17 @@ impl Render for MonitorView {
                         },
                         muted,
                     ))
-                    .child(metric("Streak", streak, muted))
-                    .child(link_metric(link, muted)),
+                    .child(metric("Streak", streak, muted)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_baseline()
+                    .gap_x_5()
+                    .gap_y_1()
+                    .child(link_metric(link, muted))
+                    .child(peak_metric(peak, muted)),
             );
 
         div()
@@ -678,12 +688,6 @@ impl Render for MonitorView {
                                     .child(metric("Avg RTT", avg, muted))
                                     .child(metric("Worst RTT", rtt(recent.worst), muted)),
                             ),
-                    )
-                    .child(divider())
-                    .child(
-                        Label::new("ICMP replies do not measure service availability.")
-                            .text_sm()
-                            .text_color(muted),
                     ),
             )
     }
@@ -724,7 +728,7 @@ fn link_metric(link: Option<&LinkSpeed>, muted: Hsla) -> Div {
         .min_w_0()
         .gap_x_2()
         .gap_y_1()
-        .child(Label::new("Negotiated link speed").text_color(muted))
+        .child(Label::new("Link Speed").text_color(muted))
         .when_some(kind, |el, (name, icon)| {
             el.child(
                 div()
@@ -741,15 +745,31 @@ fn link_metric(link: Option<&LinkSpeed>, muted: Hsla) -> Div {
         .when(reported, |el| {
             el.child(metric("Rx", link_rate(rx), muted).flex_shrink_0())
                 .child(metric("Tx", link_rate(tx), muted).flex_shrink_0())
-                .child(
-                    Label::new("Adapter-reported, not traffic")
-                        .text_xs()
-                        .text_color(muted),
-                )
         })
         .when(!reported, |el| {
             el.child(Label::new(UNAVAILABLE).font_semibold())
         })
+}
+
+fn peak_metric(peak: Option<(u64, u64)>, muted: Hsla) -> impl IntoElement {
+    const TITLE: &str = "Max. Speed captured";
+    const HELP: &str =
+        "Passive peak adapter throughput this session, not a speed test or target throughput.";
+    div()
+        .id("peak-speed")
+        .role(Role::Group)
+        .aria_label(TITLE)
+        .aria_description(HELP)
+        .tooltip(|window, cx| Tooltip::new(HELP).max_w(px(280.)).build(window, cx))
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .min_w_0()
+        .gap_x_2()
+        .gap_y_1()
+        .child(Label::new(TITLE).text_color(muted).flex_shrink_0())
+        .child(metric("Rx", link_rate(peak.map(|(rx, _)| rx)), muted).flex_shrink_0())
+        .child(metric("Tx", link_rate(peak.map(|(_, tx)| tx)), muted).flex_shrink_0())
 }
 
 fn link_rate(bps: Option<u64>) -> String {
@@ -839,6 +859,7 @@ mod tests {
         }
         for (bps, expected) in [
             (None, "Unavailable"),
+            (Some(0), "0 Mbps"),
             (Some(5_000), "<0.01 Mbps"),
             (Some(144_400_000), "144.4 Mbps"),
             (Some(1_000_000_000), "1 Gbps"),
