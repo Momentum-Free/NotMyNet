@@ -91,6 +91,17 @@ pub(crate) fn strip_rect(
 }
 
 #[cfg(any(windows, test))]
+pub(crate) fn covers_display(frame: [i32; 4], display: [i32; 4]) -> bool {
+    let [left, top, right, bottom] = display;
+    right > left
+        && bottom > top
+        && frame
+            .into_iter()
+            .zip(display)
+            .all(|(edge, expected)| edge.abs_diff(expected) <= 2)
+}
+
+#[cfg(any(windows, test))]
 pub(crate) fn slice_boundary(index: usize, count: usize, length: i32) -> i32 {
     (index as u64 * length as u64 / count as u64) as i32
 }
@@ -108,4 +119,22 @@ fn strip_handles_negative_desktop_origins_and_fractional_slices() {
     assert_eq!((bounds[0], bounds[60]), (0, 391));
     assert!(bounds.windows(2).all(|w| (6..=7).contains(&(w[1] - w[0]))));
     assert_eq!(slice_boundary(600, 600, 200), 200);
+}
+
+#[cfg(test)]
+#[test]
+fn fullscreen_frame_matches_only_the_selected_display() {
+    use OverlayEdge::Bottom;
+    let display = [-2560, -180, 0, 1260];
+    let work = [-2560, -180, 0, 1188];
+    assert!(covers_display(display, display));
+    assert!(covers_display([-2561, -180, 0, 1259], display));
+    assert!(!covers_display(work, display));
+    // Even if the outer frame covers an auto-hide taskbar, a title bar in
+    // the non-client area keeps the client rectangle from filling the display.
+    assert!(!covers_display([-2560, -140, 0, 1260], display));
+    assert!(!covers_display([0, 0, 1920, 1080], display));
+    assert!(!covers_display([-2560, -180, 1920, 1260], display));
+    assert_eq!(strip_rect(work, Bottom, 6), Some([-2560, 1182, 0, 1188]));
+    assert_eq!(strip_rect(display, Bottom, 6), Some([-2560, 1254, 0, 1260]));
 }

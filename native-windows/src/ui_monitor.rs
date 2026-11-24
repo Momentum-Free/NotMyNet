@@ -1,4 +1,8 @@
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 use gpui_kit::{
     base::StyledExt as _,
@@ -17,13 +21,29 @@ use notmynet_windows::{
     Appearance, LinkKind, LinkSpeed, Monitor, Phase, Sample, Settings, Snapshot, format_duration,
 };
 
+use windows_sys::Win32::{
+    Foundation::{POINT, RECT},
+    Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint},
+    UI::{
+        HiDpi::{
+            AdjustWindowRectExForDpi, GetDpiForMonitor, GetDpiForSystem, GetSystemMetricsForDpi,
+            MDT_EFFECTIVE_DPI,
+        },
+        WindowsAndMessaging::{
+            SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME, USER_DEFAULT_SCREEN_DPI, WS_EX_APPWINDOW,
+            WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+        },
+    },
+};
+
 use crate::{
     overlay::Overlay,
-    ui_history::{Recent, TILE_GAP, TILE_MIN, columns},
+    ui_history::{Grid, Recent, launch_height, snap},
     ui_settings,
 };
 
 const PAD: f32 = 22.;
+const MIN_HEIGHT: f32 = 360.;
 const SCROLLBAR_ROOM: f32 = 12.;
 const DASH: &str = "—";
 const UNAVAILABLE: &str = "Unavailable";
@@ -32,17 +52,26 @@ pub fn run() {
     application().with_assets(assets::AllAssets).run(|cx| {
         gpui_kit::init(cx);
         let settings = Settings::load();
-        let (main, _) = gpui_kit::open_window(
-            window_options(
-                "NotMyNet",
-                size(px(920.), px(540.)),
-                size(px(390.), px(360.)),
-                cx,
-            ),
-            cx,
-            |window, cx| cx.new(|cx| MonitorView::new(settings, window, cx)),
-        )
+        let (main, view) = gpui_kit::open_window(monitor_options(cx), cx, |window, cx| {
+            cx.new(|cx| MonitorView::new(settings, window, cx))
+        })
         .expect("Could not open NotMyNet");
+        // open_window draws once before returning. Fit once from that measured
+        // layout, before entering the event loop; never resize on Apply or render.
+        main.update(cx, |_, window, cx| {
+            let viewport = window.viewport_size();
+            let grid = monitor_grid(settings.display_count, window);
+            let height = px(launch_height(
+                view.read(cx).chrome_height.get(),
+                &grid,
+                MIN_HEIGHT,
+                f32::from(viewport.height),
+            ));
+            if height < viewport.height {
+                window.resize(size(viewport.width, height));
+            }
+        })
+        .expect("Could not fit NotMyNet");
         cx.on_window_closed(move |cx, id| {
             if id == main.window_id() {
                 cx.quit();
@@ -50,6 +79,65 @@ pub fn run() {
         })
         .detach();
     });
+}
+
+fn monitor_options(cx: &App) -> WindowOptions {
+    let initial = size(px(920.), px(540.));
+    let minimum = size(px(390.), px(MIN_HEIGHT));
+    let mut options = window_options("NotMyNet", initial, minimum, cx);
+    if let Some(display) = cx.primary_display() {
+        let work = display.visible_bounds();
+        let frame = primary_frame();
+        let cap = (work.size - frame).max(&size(px(1.), px(1.)));
+        let client = size(initial.width.min(cap.width), cap.height);
+        let mut bounds = Bounds::centered_at(work.center(), client);
+        // GPUI supplies these bounds to Win32 SetWindowPlacement, which uses
+        // workspace coordinates for a normal app window (not screen coordinates).
+        bounds.origin -= work.origin - display.bounds().origin;
+        options.display_id = Some(display.id());
+        options.window_bounds = Some(WindowBounds::Windowed(bounds));
+        options.window_min_size = Some(minimum.min(&client));
+    }
+    options
+}
+
+fn primary_frame() -> Size<Pixels> {
+    let (mut dpi, mut dpi_y) = (0, 0);
+    let mut rect = RECT::default();
+    // SAFETY: all outputs are initialized stack values, and these calls only
+    // query display metrics. Use GPUI Windows' normal resizable window styles.
+    let (width, height) = unsafe {
+        let monitor = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
+        if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut dpi_y) < 0 || dpi == 0 {
+            dpi = GetDpiForSystem().max(USER_DEFAULT_SCREEN_DPI);
+        }
+        let style = WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+        if AdjustWindowRectExForDpi(&mut rect, style, 0, WS_EX_APPWINDOW, dpi) != 0 {
+            (rect.right - rect.left, rect.bottom - rect.top)
+        } else {
+            let frame = |index| GetSystemMetricsForDpi(index, dpi);
+            let padding = frame(SM_CXPADDEDBORDER);
+            (
+                2 * (frame(SM_CXFRAME) + padding),
+                2 * (frame(SM_CYFRAME) + padding),
+            )
+        }
+    };
+    let scale = dpi as f32 / USER_DEFAULT_SCREEN_DPI as f32;
+    size(px(width as f32 / scale), px(height as f32 / scale))
+}
+
+fn monitor_grid(count: usize, window: &Window) -> Grid {
+    let scale = window.scale_factor();
+    let width = f32::from(window.viewport_size().width)
+        - 2. * snap(PAD, scale)
+        - snap(SCROLLBAR_ROOM, scale);
+    Grid::new(
+        width,
+        count,
+        scale,
+        1.25 * f32::from(window.rem_size()), // Label's single-line height.
+    )
 }
 
 pub fn window_options(
@@ -110,6 +198,7 @@ pub struct MonitorView {
     overlay: Overlay,
     overlay_error: Option<String>,
     refresh: Option<Task<()>>,
+    chrome_height: Rc<Cell<f32>>,
     history: ScrollHandle,
     tile_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     history_focus: FocusHandle,
@@ -168,6 +257,7 @@ impl MonitorView {
             overlay: Overlay::default(),
             overlay_error: None,
             refresh: None,
+            chrome_height: Rc::default(),
             history: ScrollHandle::new(),
             tile_bounds: Rc::default(),
             history_focus: cx.focus_handle(),
@@ -337,16 +427,19 @@ impl MonitorView {
         samples: &[Sample],
         count: usize,
         cutoffs: Settings,
-        width: f32,
+        grid: &Grid,
+        height: f32,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let cols = columns(width);
-        let tile_width =
-            ((width - (cols - 1) as f32 * TILE_GAP) / cols as f32).clamp(TILE_MIN, 36.);
-        let rows = count.div_ceil(cols);
-        let last_cols = (count - 1) % cols + 1;
-        let last_width = last_cols as f32 * (tile_width + TILE_GAP) - TILE_GAP;
+        let Grid {
+            cols, rows, width, ..
+        } = *grid;
+        let last_width = grid.row_width(count - rows.saturating_sub(1) * cols);
+        let step = px(grid.row_step());
+        let label_height = px(grid.label_height);
+        let overflow = height < grid.full_height();
+        let height = px(height);
         let muted = cx.theme().muted_foreground;
         let ring = cx.theme().ring;
         let dark = cx.theme().is_dark();
@@ -358,19 +451,17 @@ impl MonitorView {
         if scroll.offset().y <= -scroll.max_offset().y + px(1.) {
             scroll.scroll_to_bottom();
         }
-        let row_limit =
-            (((f32::from(window.viewport_size().height) - 174.) / 40.) as usize).clamp(3, 6);
-        let overflow = rows > row_limit;
-        let height = px((rows.min(row_limit) as f32) * 40. + 44.);
         div()
             .relative()
             .h(height)
+            .flex_shrink_0()
             .child(
                 div()
                     // A reflow invalidates the tooltip's original hitbox.
                     .id(format!(
-                        "history-scroll-{}-{count}-{row_limit}",
-                        width.to_bits()
+                        "history-scroll-{}-{count}-{}",
+                        width.to_bits(),
+                        f32::from(height).to_bits()
                     ))
                     .size_full()
                     .pr(px(SCROLLBAR_ROOM))
@@ -379,7 +470,7 @@ impl MonitorView {
                     .tooltip(move |_, cx| cx.new(|_| ProbeTooltip { view: view.clone() }).into())
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(px(grid.row_gap))
                     .role(Role::Group)
                     .aria_label("Recent probe history, oldest to newest")
                     .track_focus(&self.history_focus)
@@ -392,10 +483,10 @@ impl MonitorView {
                         let delta = match event.keystroke.key.as_str() {
                             "home" => scroll.max_offset().y,
                             "end" => -scroll.max_offset().y,
-                            "pageup" => height - px(40.),
-                            "pagedown" => px(40.) - height,
-                            "up" => px(40.),
-                            "down" => px(-40.),
+                            "pageup" => height - step,
+                            "pagedown" => step - height,
+                            "up" => step,
+                            "down" => -step,
                             _ => return,
                         };
                         scroll.set_offset(point(
@@ -406,7 +497,14 @@ impl MonitorView {
                         window.prevent_default();
                         cx.stop_propagation();
                     })
-                    .child(Label::new("Oldest").text_xs().text_color(muted))
+                    .child(
+                        Label::new("Oldest")
+                            .text_xs()
+                            .h(label_height)
+                            .whitespace_nowrap()
+                            .flex_shrink_0()
+                            .text_color(muted),
+                    )
                     .children((0..rows).map(|row| {
                         let row_bounds = Rc::clone(&tile_bounds);
                         div()
@@ -422,7 +520,7 @@ impl MonitorView {
                             })
                             .flex()
                             .flex_shrink_0()
-                            .gap(px(TILE_GAP))
+                            .gap(px(grid.tile_gap))
                             .children((row * cols..((row + 1) * cols).min(count)).map(|index| {
                                 let sample = samples.get(index).unwrap_or(&Sample::Empty);
                                 let mark = Mark::for_sample(sample, cutoffs);
@@ -434,7 +532,7 @@ impl MonitorView {
                                 } else {
                                     "Slot"
                                 };
-                                tile(mark, dark, tile_width, 34.)
+                                tile(mark, dark, grid.tile_width(index % cols), grid.tile_height)
                                     .id(("sample", index))
                                     .role(Role::Label)
                                     .aria_label(format!("{position} {}, {detail}", index + 1))
@@ -445,8 +543,14 @@ impl MonitorView {
                             .flex()
                             .justify_end()
                             .flex_shrink_0()
-                            .w(px(last_width.max(55.)))
-                            .child(Label::new("Newest").text_xs().text_color(muted)),
+                            .w(px(last_width.max(55.).min(width)))
+                            .h(label_height)
+                            .child(
+                                Label::new("Newest")
+                                    .text_xs()
+                                    .whitespace_nowrap()
+                                    .text_color(muted),
+                            ),
                     ),
             )
             .when(self.history_focus.is_focused(window), |el| {
@@ -498,7 +602,13 @@ impl Render for MonitorView {
         let streak = snapshot.map_or_else(|| DASH.into(), |s| s.success_streak.to_string());
         let link = snapshot.and_then(|s| s.link_speed.as_ref());
         let peak = snapshot.and_then(|s| s.peak_bps);
-        let width = f32::from(window.viewport_size().width) - 2. * PAD - SCROLLBAR_ROOM;
+        let grid = monitor_grid(count, window);
+        let width = grid.width;
+        let grid_height = grid
+            .viewport_height(f32::from(window.viewport_size().height) - self.chrome_height.get());
+        let scale = window.scale_factor();
+        let block_padding = window.rem_size();
+        let chrome_height = Rc::clone(&self.chrome_height);
         let awaiting_restart =
             running && probe_values(self.settings) != probe_values(self.run_settings);
         let loss = recent
@@ -576,7 +686,7 @@ impl Render for MonitorView {
                     .child(Label::new("Recent probes").text_xl().font_semibold())
                     .child(Label::new(format!("{count} slots")).text_color(muted)),
             )
-            .child(self.history_grid(samples, count, cutoffs, width, window, cx))
+            .child(self.history_grid(samples, count, cutoffs, &grid, grid_height, window, cx))
             .child(
                 div().flex().flex_wrap().gap_x_4().gap_y_2().children(
                     [
@@ -678,7 +788,23 @@ impl Render for MonitorView {
                     .flex_col()
                     .gap_4()
                     .px(px(PAD))
-                    .py_4()
+                    .py(block_padding)
+                    .on_children_prepainted(move |bounds, window, _| {
+                        // The real layout includes toolbar/legend wrapping and any
+                        // notices (including a wrapped overlay error). Subtract only
+                        // the known history viewport; the rest is measured chrome.
+                        if let (Some(first), Some(last)) = (bounds.first(), bounds.last()) {
+                            let measured = snap(
+                                f32::from(last.bottom() - first.top())
+                                    + 2. * snap(f32::from(block_padding), scale)
+                                    - grid_height,
+                                scale,
+                            );
+                            if chrome_height.replace(measured) != measured {
+                                window.request_animation_frame();
+                            }
+                        }
+                    })
                     .child(toolbar)
                     .when_some(self.window_error.clone(), |el, error| {
                         el.child(
@@ -844,12 +970,7 @@ impl Render for ProbeTooltip {
             let view = view.read(cx);
             // One tooltip owner for the grid: retained per-tile requests must never compete.
             // Recompute the current clipped tile under the pointer after scrolling or reflow.
-            let pointer = window.mouse_position();
-            let index = view.tile_bounds.borrow().iter().position(|bounds| {
-                bounds.size.width > px(0.)
-                    && bounds.size.height > px(0.)
-                    && bounds.contains(&pointer)
-            })?;
+            let index = tile_at(&view.tile_bounds.borrow(), window.mouse_position())?;
             let sample = view
                 .snapshot
                 .as_ref()
@@ -861,6 +982,12 @@ impl Render for ProbeTooltip {
             el.child(Tooltip::new(text).build(window, cx))
         })
     }
+}
+
+fn tile_at(tiles: &[Bounds<Pixels>], pointer: Point<Pixels>) -> Option<usize> {
+    tiles.iter().position(|bounds| {
+        bounds.size.width > px(0.) && bounds.size.height > px(0.) && bounds.contains(&pointer)
+    })
 }
 
 fn probe_detail(sample: &Sample) -> String {
@@ -880,7 +1007,25 @@ fn rtt(ms: Option<u32>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Sample, Settings, link_rate, overlay_colors, probe_detail};
+    use super::{Sample, Settings, link_rate, overlay_colors, probe_detail, tile_at};
+    use gpui_kit::{bounds, point, px, size};
+
+    #[test]
+    fn tooltip_uses_current_clipped_tile_geometry_after_scroll_and_resize() {
+        let point_at = |x, y| point(px(x), px(y));
+        let rect = |x, y, w, h| bounds(point_at(x, y), size(px(w), px(h)));
+        let mask = rect(0., 0., 110., 40.);
+        let tiles = [rect(0., -40., 24., 34.), rect(0., 0., 24., 34.)];
+        let clipped = tiles.map(|tile| tile.intersect(&mask));
+        assert_eq!(tile_at(&clipped, point_at(12., 10.)), Some(1));
+        assert_eq!(tile_at(&clipped, point_at(30., 10.)), None);
+        assert_eq!(tile_at(&clipped, point_at(12., -10.)), None);
+
+        let wider = [rect(0., 0., 48., 34.), rect(52., 0., 48., 34.)];
+        assert_eq!(tile_at(&wider, point_at(30., 10.)), Some(0));
+        assert_eq!(tile_at(&wider, point_at(50., 10.)), None);
+        assert_eq!(tile_at(&wider, point_at(56., 10.)), Some(1));
+    }
 
     #[test]
     fn strip_uses_history_order_and_active_run_cutoffs_in_rgb() {

@@ -1,5 +1,10 @@
 # Changelog
 
+## Windows (unreleased)
+
+- The normal Ping Strip follows the physical display edge when a borderless fullscreen window is active on that display; otherwise it uses the work-area edge.
+- The main window sizes itself to fit the saved probe history at launch, up to the primary display’s work area. Probe cards stretch across wider windows.
+
 ## Windows v0.1.0
 
 First public Windows x64 release of the native NotMyNet monitor.

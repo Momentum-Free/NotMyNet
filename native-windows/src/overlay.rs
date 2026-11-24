@@ -1,7 +1,7 @@
 //! Read-only shell integration. Only our own layered popup is created or repositioned.
 use crate::{
     OverlayEdge, OverlayMonitor, OverlaySettings,
-    overlay_config::{slice_boundary, strip_rect},
+    overlay_config::{covers_display, slice_boundary, strip_rect},
 };
 use std::{
     io,
@@ -10,12 +10,12 @@ use std::{
 };
 use windows_sys::{
     Win32::{
-        Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
+        Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
         Graphics::Gdi::{
-            BeginPaint, DC_BRUSH, EndPaint, EnumDisplayMonitors, FillRect, GetMonitorInfoW,
-            GetStockObject, HDC, HMONITOR, InvalidateRect, MONITOR_DEFAULTTONULL, MONITORINFOEXW,
-            MonitorFromWindow, PAINTSTRUCT, SetDCBrushColor,
+            BeginPaint, ClientToScreen, DC_BRUSH, EndPaint, EnumDisplayMonitors, FillRect,
+            GetMonitorInfoW, GetStockObject, HDC, HMONITOR, InvalidateRect, MONITOR_DEFAULTTONULL,
+            MONITORINFOEXW, MonitorFromWindow, PAINTSTRUCT, SetDCBrushColor,
         },
         System::{
             LibraryLoader::GetModuleHandleW,
@@ -170,6 +170,11 @@ impl Overlay {
             .ok_or("Overlay display is disconnected. Choose another display in Settings.")?;
         let info = screen.info.monitorInfo;
         let vertical = matches!(config.edge, OverlayEdge::Left | OverlayEdge::Right);
+        let fullscreen = if config.behind_taskbar {
+            None
+        } else {
+            borderless_foreground(&screen)
+        };
         let (rect, behind) = if config.behind_taskbar {
             if transparency_enabled() != Some(true) {
                 return Err(
@@ -182,8 +187,13 @@ impl Overlay {
             // Use the taskbar's full background instead of the edge-strip thickness.
             (bounds, bar)
         } else {
+            let area = if fullscreen.is_some() {
+                info.rcMonitor
+            } else {
+                info.rcWork
+            };
             (
-                strip_rect(into_rect(info.rcWork), config.edge, config.thickness_px)
+                strip_rect(into_rect(area), config.edge, config.thickness_px)
                     .ok_or("Could not place the overlay on this display.")?,
                 null_mut(),
             )
@@ -249,6 +259,23 @@ impl Overlay {
                 return Err("Could not show the overlay.".into());
             }
             self.placement = Some((rect, behind));
+        } else if fullscreen.is_some_and(|window| is_topmost(window) && follows(self.hwnd, window))
+        {
+            // Restore z-order in place when a topmost fullscreen window comes forward.
+            if unsafe {
+                SetWindowPos(
+                    self.hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                )
+            } == 0
+            {
+                return Err("Could not position the overlay.".into());
+            }
         }
         if moved || repaint {
             unsafe {
@@ -376,18 +403,68 @@ fn follows(window: HWND, other: HWND) -> bool {
     false
 }
 
-fn taskbar_is_visible(bar: HWND) -> bool {
+fn is_visible_on_desktop(window: HWND) -> bool {
     let mut cloaked = 0u32;
-    // A shell window can retain WS_VISIBLE while DWM is not displaying it.
+    // A window can retain WS_VISIBLE while DWM is not displaying it.
     unsafe {
-        IsWindowVisible(bar) != 0
+        IsWindowVisible(window) != 0
             && DwmGetWindowAttribute(
-                bar,
+                window,
                 DWMWA_CLOAKED as u32,
                 (&mut cloaked as *mut u32).cast(),
                 size_of_val(&cloaked) as u32,
             ) >= 0
             && cloaked == 0
+    }
+}
+
+fn borderless_foreground(screen: &Screen) -> Option<HWND> {
+    // ponytail: geometry of the active window covers normal borderless mode without
+    // hooks or per-game rules. This does not identify exclusive fullscreen.
+    let window = unsafe { GetForegroundWindow() };
+    unsafe {
+        if window.is_null()
+            || window == GetShellWindow()
+            || window == GetDesktopWindow()
+            || IsIconic(window) != 0
+            || MonitorFromWindow(window, MONITOR_DEFAULTTONULL) != screen.handle
+            || !is_visible_on_desktop(window)
+        {
+            return None;
+        }
+        let mut frame = RECT::default();
+        // DWM returns the visible frame in physical pixels, without invisible resize borders.
+        let success = DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            (&mut frame as *mut RECT).cast(),
+            size_of_val(&frame) as u32,
+        ) >= 0;
+        let display = into_rect(screen.info.monitorInfo.rcMonitor);
+        if !success || !covers_display(into_rect(frame), display) {
+            return None;
+        }
+        // A fullscreen app can retain caption styles while drawing no frame. Check
+        // the actual client area to exclude normal maximized windows with a title bar.
+        let mut client = RECT::default();
+        if GetClientRect(window, &mut client) == 0 {
+            return None;
+        }
+        let mut top_left = POINT {
+            x: client.left,
+            y: client.top,
+        };
+        let mut bottom_right = POINT {
+            x: client.right,
+            y: client.bottom,
+        };
+        (ClientToScreen(window, &mut top_left) != 0
+            && ClientToScreen(window, &mut bottom_right) != 0
+            && covers_display(
+                [top_left.x, top_left.y, bottom_right.x, bottom_right.y],
+                display,
+            ))
+        .then_some(window)
     }
 }
 
@@ -412,7 +489,7 @@ fn taskbar(screen: &Screen, edge: OverlayEdge) -> Option<(HWND, [i32; 4])> {
                 GetWindowThreadProcessId(bar, &mut pid);
             }
             if pid != shell_pid
-                || !taskbar_is_visible(bar)
+                || !is_visible_on_desktop(bar)
                 || unsafe { MonitorFromWindow(bar, MONITOR_DEFAULTTONULL) } != screen.handle
             {
                 continue;
