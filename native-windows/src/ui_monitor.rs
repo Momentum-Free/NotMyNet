@@ -1,11 +1,7 @@
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui_kit::{
-    base::StyledExt as _,
+    base::{InteractiveElementExt as _, StyledExt as _},
     component::{
         ActiveTheme, Icon, IconName, Theme, ThemeMode,
         button::{Button, ButtonVariants},
@@ -199,8 +195,8 @@ pub struct MonitorView {
     overlay_error: Option<String>,
     refresh: Option<Task<()>>,
     chrome_height: Rc<Cell<f32>>,
+    page_scroll: ScrollHandle,
     history: ScrollHandle,
-    tile_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     history_focus: FocusHandle,
     _subscriptions: [Subscription; 3],
 }
@@ -258,8 +254,8 @@ impl MonitorView {
             overlay_error: None,
             refresh: None,
             chrome_height: Rc::default(),
+            page_scroll: ScrollHandle::new(),
             history: ScrollHandle::new(),
-            tile_bounds: Rc::default(),
             history_focus: cx.focus_handle(),
             _subscriptions: [target_events, appearance, close],
         }
@@ -445,8 +441,6 @@ impl MonitorView {
         let dark = cx.theme().is_dark();
         let view = cx.weak_entity();
         let scroll = self.history.clone();
-        let tile_bounds = Rc::clone(&self.tile_bounds);
-        tile_bounds.borrow_mut().resize(count, Bounds::default());
         // Start at the newest tail and follow it through reflow; respect a user who scrolls back.
         if scroll.offset().y <= -scroll.max_offset().y + px(1.) {
             scroll.scroll_to_bottom();
@@ -457,17 +451,13 @@ impl MonitorView {
             .flex_shrink_0()
             .child(
                 div()
-                    // A reflow invalidates the tooltip's original hitbox.
-                    .id(format!(
-                        "history-scroll-{}-{count}-{}",
-                        width.to_bits(),
-                        f32::from(height).to_bits()
-                    ))
+                    .id("history-scroll")
                     .size_full()
                     .pr(px(SCROLLBAR_ROOM))
                     .track_scroll(&scroll)
                     .overflow_y_scroll()
-                    .tooltip(move |_, cx| cx.new(|_| ProbeTooltip { view: view.clone() }).into())
+                    .on_mouse_move(|_, window, _| window.refresh())
+                    .on_hover(|_, window, _| window.refresh())
                     .flex()
                     .flex_col()
                     .gap(px(grid.row_gap))
@@ -506,16 +496,37 @@ impl MonitorView {
                             .text_color(muted),
                     )
                     .children((0..rows).map(|row| {
-                        let row_bounds = Rc::clone(&tile_bounds);
+                        let view = view.clone();
                         div()
-                            .on_children_prepainted(move |bounds, window, _| {
+                            .on_children_prepainted(move |mut bounds, window, cx| {
+                                let mouse = window.mouse_position();
                                 let mask = window.content_mask().bounds;
-                                for (column, bounds) in bounds.into_iter().enumerate() {
-                                    if let Some(tile) =
-                                        row_bounds.borrow_mut().get_mut(row * cols + column)
-                                    {
-                                        *tile = bounds.intersect(&mask);
-                                    }
+                                if !mask.contains(&mouse) || !window.is_window_active() {
+                                    return;
+                                }
+                                bounds
+                                    .iter_mut()
+                                    .for_each(|tile| *tile = tile.intersect(&mask));
+                                if let Some(column) = tile_at(&bounds, mouse)
+                                    && let Some(view) = view.upgrade()
+                                {
+                                    let sample = view
+                                        .read(cx)
+                                        .snapshot
+                                        .as_ref()
+                                        .and_then(|snap| snap.samples.get(row * cols + column))
+                                        .unwrap_or(&Sample::Empty);
+                                    let tile = bounds[column];
+                                    let view = Tooltip::new(probe_detail(sample)).build(window, cx);
+                                    // One tooltip at the actual clipped tile under the pointer, with a
+                                    // fresh anchor on move, scroll, or resize. No retained tile hitboxes.
+                                    window.set_tooltip(AnyTooltip {
+                                        view,
+                                        mouse_position: mouse,
+                                        check_visible_and_update: Rc::new(move |_, window, _| {
+                                            tile.contains(&window.mouse_position())
+                                        }),
+                                    });
                                 }
                             })
                             .flex()
@@ -777,15 +788,20 @@ impl Render for MonitorView {
                     .child(peak_metric(peak, muted)),
             );
 
-        div()
+        let page = div()
+            .id("monitor-page")
             .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .overflow_y_scrollbar()
+            .track_scroll(&self.page_scroll)
+            .overflow_y_scroll()
+            .lock_scroll_axis()
+            .flex()
+            .flex_col()
             .child(
                 div()
                     .flex()
                     .flex_col()
+                    .flex_none()
+                    .min_h_full()
                     .gap_4()
                     .px(px(PAD))
                     .py(block_padding)
@@ -858,7 +874,16 @@ impl Render for MonitorView {
                                     .child(metric("Worst RTT", rtt(recent.worst), muted)),
                             ),
                     ),
-            )
+            );
+        // Keep both nested scrollers in GPUI's normal bubble dispatch; the Kit
+        // ScrollBounce wrapper takes wheel events before the history sees them.
+        div()
+            .relative()
+            .size_full()
+            .bg(bg)
+            .text_color(fg)
+            .child(page)
+            .vertical_scrollbar(&self.page_scroll)
     }
 }
 
@@ -958,30 +983,6 @@ fn link_rate(bps: Option<u64>) -> String {
         "{} {unit}",
         rate.trim_end_matches('0').trim_end_matches('.')
     )
-}
-
-struct ProbeTooltip {
-    view: WeakEntity<MonitorView>,
-}
-
-impl Render for ProbeTooltip {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let text = self.view.upgrade().and_then(|view| {
-            let view = view.read(cx);
-            // One tooltip owner for the grid: retained per-tile requests must never compete.
-            // Recompute the current clipped tile under the pointer after scrolling or reflow.
-            let index = tile_at(&view.tile_bounds.borrow(), window.mouse_position())?;
-            let sample = view
-                .snapshot
-                .as_ref()
-                .and_then(|snap| snap.samples.get(index))
-                .unwrap_or(&Sample::Empty);
-            Some(probe_detail(sample))
-        });
-        div().when_some(text, |el, text| {
-            el.child(Tooltip::new(text).build(window, cx))
-        })
-    }
 }
 
 fn tile_at(tiles: &[Bounds<Pixels>], pointer: Point<Pixels>) -> Option<usize> {
