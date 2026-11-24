@@ -1,8 +1,8 @@
 # Changelog
 
-## Windows (unreleased)
+## Windows v0.1.1
 
-- The normal Ping Strip follows the physical display edge when a borderless fullscreen window is active on that display; otherwise it uses the work-area edge.
+- The normal Ping Strip follows the physical display edge when a borderless fullscreen window is active on that display; otherwise it uses the work-area edge. Behind-taskbar mode is unchanged. Exclusive fullscreen is not guaranteed.
 - The main window sizes itself to fit the saved probe history at launch, up to the primary display’s work area. Probe cards stretch across wider windows.
 
 ## Windows v0.1.0
