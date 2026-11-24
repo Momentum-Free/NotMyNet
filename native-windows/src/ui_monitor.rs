@@ -441,6 +441,7 @@ impl MonitorView {
         let dark = cx.theme().is_dark();
         let view = cx.weak_entity();
         let scroll = self.history.clone();
+        let wheel_scroll = scroll.clone();
         // Start at the newest tail and follow it through reflow; respect a user who scrolls back.
         if scroll.offset().y <= -scroll.max_offset().y + px(1.) {
             scroll.scroll_to_bottom();
@@ -455,7 +456,20 @@ impl MonitorView {
                     .size_full()
                     .pr(px(SCROLLBAR_ROOM))
                     .track_scroll(&scroll)
-                    .overflow_y_scroll()
+                    .overflow_y_hidden()
+                    .on_scroll(move |event, window, cx| {
+                        // Scroll only one pane per event. Let the page handle wheel
+                        // input once history reaches the boundary in that direction.
+                        let mut offset = wheel_scroll.offset();
+                        let delta = event.delta.pixel_delta(window.line_height()).y;
+                        let next = (offset.y + delta).clamp(-wheel_scroll.max_offset().y, px(0.));
+                        if next != offset.y {
+                            offset.y = next;
+                            wheel_scroll.set_offset(offset);
+                            window.refresh();
+                            cx.stop_propagation();
+                        }
+                    })
                     .on_mouse_move(|_, window, _| window.refresh())
                     .on_hover(|_, window, _| window.refresh())
                     .flex()
@@ -501,7 +515,10 @@ impl MonitorView {
                             .on_children_prepainted(move |mut bounds, window, cx| {
                                 let mouse = window.mouse_position();
                                 let mask = window.content_mask().bounds;
-                                if !mask.contains(&mouse) || !window.is_window_active() {
+                                if !window.is_window_hovered()
+                                    || !window.is_window_active()
+                                    || !mask.contains(&mouse)
+                                {
                                     return;
                                 }
                                 bounds
